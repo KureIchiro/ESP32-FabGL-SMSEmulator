@@ -55,7 +55,7 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 ## 📂 SDカードの構成とセットアップ
 
 MicroSDカードのルートディレクトリに、以下のフォルダおよびファイルを配置してください。
-`SAVE` フォルダとその中身は、エミュレータ起動前にあらかじめ作成しておく必要があります。
+`SAVE` フォルダは、エミュレータ起動前にあらかじめ作成しておく必要があります。
 
 ```text
 / (SD Root)
@@ -195,7 +195,7 @@ The licenses for each core within this software comply with the respective polic
 ## 📂 SD Card Structure and Setup
 
 Please place the following folders and files in the root directory of your MicroSD card.
-The `SAVE` folder and its contents must be created manually before launching the emulator.
+The `SAVE` folder must be created manually before launching the emulator.
 
 ```text
 / (SD Root)
