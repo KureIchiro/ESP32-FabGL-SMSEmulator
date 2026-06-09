@@ -129,8 +129,10 @@ uint8_t IRAM_ATTR VDP::readControl() {
 }
 
 void IRAM_ATTR VDP::renderLine(int y, uint8_t *line_buf) {
+	uint8_t bg_color_idx = 16 + (reg_[7] & 0x0F);
+
 	if (!(reg_[1] & 0x40)) {
-		uint8_t bg = cramRGB[reg_[7] & 0x0F];
+		uint8_t bg = cramRGB[bg_color_idx];
 		memset(line_buf, bg, SCREEN_W);
 		return;
 	}
@@ -142,8 +144,9 @@ void IRAM_ATTR VDP::renderLine(int y, uint8_t *line_buf) {
 	renderSprites(y, line_buf, bginfo);
 
 	if (reg_[0] & 0x20) {
-		uint8_t bg = cramRGB[reg_[7] & 0x0F];
-		memset(line_buf, bg, 8);
+		//uint8_t bg = cramRGB[bg_color_idx];
+		//memset(line_buf, bg, 8);
+		memset(line_buf, 0, 8);
 	}
 }
 
@@ -755,7 +758,12 @@ void IRAM_ATTR VDP::tms9918a_rasterize() {
 			default: memset(active_raster, 0, sizeof(active_raster));
 		}
 	}
-
+	if (reg_[0] & 0x20) {
+		uint8_t bg = cram[reg_[7] & 0x0F];
+		for (int y = 0; y < 192; y++) {
+			memset(&active_raster[y * 256], bg, 8); // 左端の8ピクセルを背景色で上書き
+		}
+	}
 	status_ |= 0x80;
 }
 
