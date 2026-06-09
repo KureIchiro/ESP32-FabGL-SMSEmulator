@@ -1410,7 +1410,7 @@ void setup() {
   fmGen->resetOPLL();
   ym2413_enabled = false;
 
-  soundGenerator.setVolume(64);
+  soundGenerator.setVolume(100);
   soundGenerator.play(true);
   psgGen.enable(true);
   initSCCPresets();
