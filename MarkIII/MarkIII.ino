@@ -153,34 +153,20 @@ const uint8_t SCC_VOL_TABLE[16] = {
   0, 2, 4, 7, 10, 15, 21, 26, 33, 39, 47, 54, 62, 68, 73, 75
 };
 
-uint8_t Crystal_Drop_SCC[32] = {
-  0x80, 0xB0, 0xE0, 0xB0, 0x80, 0x50, 0x20, 0x50, 0x80, 0xA0, 0xC0, 0xE0, 0xFF, 0xE0, 0xC0, 0xA0,
-  0x80, 0x50, 0x20, 0x50, 0x80, 0xB0, 0xE0, 0xB0, 0x80, 0x60, 0x40, 0x20, 0x00, 0x20, 0x40, 0x60
-};
-
 uint8_t Warm_Body_PhaseShift[32] = {
   0x80, 0x68, 0x50, 0x38, 0x20, 0x10, 0x08, 0x04, 0x02, 0x04, 0x08, 0x10, 0x20, 0x38, 0x50, 0x68,
   0x80, 0x98, 0xB0, 0xC8, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC8, 0xB0, 0x98
 };
-
-uint8_t SCC_Sawtooth[32] = {
-  0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70, 0x78,
-  0x80, 0x88, 0x90, 0x98, 0xA0, 0xA8, 0xB0, 0xB8, 0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, 0xF8
-};
-
-uint8_t SCC_SyncOvertone[32] = {
-  0x80, 0xC0, 0xFF, 0xC0, 0x80, 0x40, 0x00, 0x40, 0x80, 0xA0, 0xC0, 0xA0, 0x80, 0x60, 0x40, 0x60,
-  0x80, 0x90, 0xA0, 0x90, 0x80, 0x70, 0x60, 0x70, 0x80, 0x88, 0x90, 0x88, 0x80, 0x78, 0x70, 0x78
+uint8_t SCC_Triangle_PhaseShift[32] = {
+  0x80, 0x70, 0x60, 0x50, 0x40, 0x30, 0x20, 0x10, 0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70,
+  0x80, 0x8F, 0x9F, 0xAF, 0xBF, 0xCF, 0xDF, 0xEF, 0xFF, 0xEF, 0xDF, 0xCF, 0xBF, 0xAF, 0x9F, 0x8F
 };
 
 void initSCCPresets() {
-  // マークIII 用プリセット波形を SCC 波形バッファにロード
   for (int i = 0; i < 32; i++) {
-    scc_waveform[0][i] = (int8_t)Crystal_Drop_SCC[i] - 128;
-    scc_waveform[1][i] = (int8_t)SCC_Sawtooth[i] - 128;
-    scc_waveform[2][i] = (int8_t)SCC_SyncOvertone[i] - 128;
-    scc_waveform[3][i] = (int8_t)Warm_Body_PhaseShift[i] - 128;
-    scc_waveform[4][i] = (int8_t)Warm_Body_PhaseShift[i] - 128;
+    scc_waveform[0][i] = (int8_t)Warm_Body_PhaseShift[i] - 128;
+    scc_waveform[1][i] = (int8_t)SCC_Triangle_PhaseShift[i] - 128;
+    scc_waveform[2][i] = (int8_t)SCC_Triangle_PhaseShift[i] - 128;
   }
 }
 
@@ -255,7 +241,6 @@ static DRAM_ATTR uint8_t g_vdp_cram[32];
 static DRAM_ATTR uint8_t g_vdp_cramRGB[32];
 static DRAM_ATTR uint8_t g_vdp_reg[16];
 
-// ── ステートセーブ本体構造体（PSRAMに配置） ──────────────────────────────────
 struct SaveState {
     char     magic[4];          // "SMS1"
     bool     valid;             // 有効なデータが入っているか
@@ -273,8 +258,6 @@ struct SaveState {
     bool     ym2413_en;
     bool     psg2scc_en;
 };
-// 合計サイズ: ~57KB（PSRAM想定）
-// ────────────────────────────────────────────────────────────────────────────
 static SaveState* g_psram_state = nullptr;
 
 class YM2413Generator : public fabgl::WaveformGenerator {
@@ -363,8 +346,6 @@ public:
     clearBuffer();
   }
 
-  // OPLL内部状態を丸ごと取得（エンベロープ・位相含む完全スナップショット）
-  // patch_idx: 各スロットのpatchポインタを配列インデックスに変換して保存
   void getFullState(OPLL* dest, uint8_t* patch_idx) {
     if (!opll) return;
     memcpy(dest, opll, sizeof(OPLL));
@@ -372,8 +353,6 @@ public:
       patch_idx[i] = (uint8_t)(opll->slot[i].patch - opll->patch);
   }
 
-  // OPLL内部状態を丸ごと復元。convポインタは現在のものを維持し、
-  // slot[].patchは保存したインデックスから自分のpatch配列へ付け替える
   void setFullState(const OPLL* src, const uint8_t* patch_idx) {
     if (!opll) return;
     OPLL_RateConv* keepConv = opll->conv;
@@ -494,8 +473,6 @@ private:
   uint16_t lfsr = 0x4000;
   uint8_t noiseOut = 0;
   uint8_t lastTone2Out = 0;
-  // int16_t volTable[16] = { 70, 68, 63, 58, 50, 44, 36, 31, 24, 20, 14, 9, 7, 4, 2, 0 };
-  //int16_t volTable[16] = { 80, 78, 72, 66, 57, 50, 41, 35, 27, 23, 16, 10, 8, 5, 2, 0 };
   int16_t volTable[16] = { 90, 87, 81, 75, 64, 57, 46, 40, 31, 26, 18, 12, 9, 5, 3, 0 };
   int16_t sampleBuffer[BUFFER_SIZE];
   volatile int head = 0;
@@ -897,8 +874,6 @@ void loadSRAMfromFile(int slotNumber) {
   flashStatus("SRAM Loaded!", 1000);
 }
 
-// ── ステートセーブ関数群 ──────────────────────────────────────────────────────
-
 String getStateFilePath() {
   if (current_rom_path.length() == 0) return "/ROM/SAVE/default_st.sav";
   int slash = current_rom_path.lastIndexOf('/');
@@ -908,7 +883,6 @@ String getStateFilePath() {
   return "/ROM/SAVE/" + name + "_st.sav";
 }
 
-// 現在のエミュレータ状態をPSRAMバッファに保存
 void saveStateToPSRAM() {
   if (!g_psram_state || !smsVdp) return;
   memcpy(g_psram_state->magic, "SMS2", 4);
@@ -929,7 +903,6 @@ void saveStateToPSRAM() {
   flashStatus("STATE SAVED", 800);
 }
 
-// PSRAMバッファからエミュレータ状態を復元
 void loadStateFromPSRAM() {
   if (!g_psram_state || !g_psram_state->valid || !smsVdp) {
     flashStatus("NO STATE", 1000);
@@ -952,7 +925,6 @@ void loadStateFromPSRAM() {
   flashStatus("STATE LOADED", 800);
 }
 
-// PSRAMバッファの内容をSDカードに書き出す
 void saveStateToSD() {
   if (!g_psram_state || !g_psram_state->valid) {
     flashStatus("NO STATE IN PSRAM", 1500);
@@ -967,7 +939,6 @@ void saveStateToSD() {
   flashStatus("STATE -> SD OK", 1000);
 }
 
-// SDカードからPSRAMバッファに読み込み、そのまま復元する
 void loadStateFromSD() {
   if (!g_psram_state) return;
   String path = getStateFilePath();
@@ -981,9 +952,8 @@ void loadStateFromSD() {
     flashStatus("STATE FILE CORRUPT", 2000);
     return;
   }
-  flashStatus("SD -> PSRAM OK", 1000);  // 復元はF6で行う
+  flashStatus("SD -> PSRAM OK", 1000);
 }
-// ────────────────────────────────────────────────────────────────────────────
 
 uint8_t kbdJoyState = 0x3F;
 char msgBuf[32];
@@ -1025,18 +995,18 @@ void updateKeyboard() {
       if (!isBreak && !f5_held) {
         f5_held = true;
         if (isShift) {
-          saveStateToSD();        // SHIFT+F5: PSRAM→SD書き出し
+          saveStateToSD();
         } else {
-          loadStateFromSD();      // F5: SDからロードして復元
+          loadStateFromSD();
         }
       } else if (isBreak) f5_held = false;
-    } else if (sc == 0x0B) {  // F6
+    } else if (sc == 0x0B) {
       if (!isBreak && !f6_held) {
         f6_held = true;
         if (isShift) {
-          saveStateToPSRAM();     // SHIFT+F6: PSRAMに保存
+          saveStateToPSRAM();
         } else {
-          loadStateFromPSRAM();   // F6: PSRAMから復元
+          loadStateFromPSRAM();
         }
       } else if (isBreak) f6_held = false;
     } else if (sc == 0x83) {  // F7
@@ -1052,7 +1022,6 @@ void updateKeyboard() {
           sprintf(msgBuf, "DISPLAY TIMING %d", renderCounter);
           flashStatus(msgBuf, 1000);
         } else {
-          // SHIFT+F7: VDPレジスタのデバッグ表示（スクロールロック調査用）
           if (smsVdp) {
             sprintf(msgBuf, "R0=%02X R1=%02X R8=%02X R9=%02X",
                     smsVdp->reg_[0], smsVdp->reg_[1], smsVdp->reg_[8], smsVdp->reg_[9]);
@@ -1549,7 +1518,7 @@ void setup() {
   canvas->clear();
 
   soundGenerator.attach(&psgGen);
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 3; i++) {
     scc_ch[i] = new SCCGenerator();
     soundGenerator.attach(scc_ch[i]);
     scc_ch[i]->enable(true);
