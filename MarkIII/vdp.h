@@ -5,6 +5,25 @@
 #define SCREEN_W 256
 #define SCREEN_H 192
 
+// ── ステートセーブ用構造体 ──────────────────────────────────────────────────
+struct VDPState {
+    uint8_t  vram[16384];   // VRAM（PSRAMに保存するため全量含む）
+    uint8_t  reg[16];       // VDPレジスタ
+    uint8_t  cram[32];      // カラーRAM
+    uint16_t vaddr;         // VRAMアドレスカウンタ
+    uint8_t  vcode;         // コードビット（アドレスラッチ上位2bit）
+    uint8_t  vlatch;        // コントロール1バイト目ラッチ
+    bool     vcmd;          // コントロールコマンド待ちフラグ
+    uint8_t  rbuf;          // 読み出しプリフェッチバッファ
+    uint8_t  linecnt;       // ラインカウンタ（H-INT用）
+    uint8_t  status;        // ステータスレジスタ
+    bool     vint_pending;  // V-INT 保留
+    bool     hint_pending;  // H-INT 保留
+    uint8_t  read_mode;     // リードモード
+};
+// 合計サイズ: 16384 + 16 + 32 + 小変数 ≒ 16.4 KB（PSRAM想定）
+// ────────────────────────────────────────────────────────────────────────────
+
 class VDP {
 public:
     VDP(uint8_t* vram_buf, uint8_t* cram_buf, uint8_t* cramRGB_buf, uint8_t* reg_buf);
@@ -14,6 +33,10 @@ public:
     uint8_t readData();
     void writeControl(uint8_t v);
     uint8_t readControl();
+
+    // ── ステートセーブ／ロード ──
+    void saveState(VDPState& s) const;
+    void loadState(const VDPState& s);
 
     void renderSingleLine(int y);
     void scanlineCheck(int y);

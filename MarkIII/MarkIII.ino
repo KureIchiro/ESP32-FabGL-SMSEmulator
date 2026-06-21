@@ -83,7 +83,7 @@
 #include "vdp.h"
 #include "emu2413.h"
 
-//#define USE_SERIAL_DEBUG
+#define USE_SERIAL_DEBUG
 //#define USE_SIGNAL_DEBUG
 
 // TTGO VGA32
@@ -255,6 +255,28 @@ static DRAM_ATTR uint8_t g_vdp_cram[32];
 static DRAM_ATTR uint8_t g_vdp_cramRGB[32];
 static DRAM_ATTR uint8_t g_vdp_reg[16];
 
+// ── ステートセーブ本体構造体（PSRAMに配置） ──────────────────────────────────
+struct SaveState {
+    char     magic[4];          // "SMS1"
+    bool     valid;             // 有効なデータが入っているか
+    VDPState vdp;               // VDP全状態（VRAM含む） ~16.4KB
+    Z80      cpu_state;         // Z80レジスタ/フラグ
+    uint8_t  ram[0x2000];       // メインRAM 8KB
+    uint8_t  sram_data[32768];  // カートリッジRAM 32KB
+    uint8_t  bank_regs[3];      // バンク番号（slot 0/1/2）
+    bool     sram_enabled;
+    uint8_t  sram_bank;
+    uint8_t  mapper_type;       // SmsMapperType をそのまま格納
+    bool     mapper_locked;
+    OPLL     fm_opll;           // YM2413内部状態の完全スナップショット
+    uint8_t  fm_patch_idx[18];  // 各スロットのpatchポインタ復元用インデックス
+    bool     ym2413_en;
+    bool     psg2scc_en;
+};
+// 合計サイズ: ~57KB（PSRAM想定）
+// ────────────────────────────────────────────────────────────────────────────
+static SaveState* g_psram_state = nullptr;
+
 class YM2413Generator : public fabgl::WaveformGenerator {
 private:
   OPLL* opll = nullptr;
@@ -338,6 +360,27 @@ public:
       OPLL_writeIO(opll, 1, src[i]);
     }
 
+    clearBuffer();
+  }
+
+  // OPLL内部状態を丸ごと取得（エンベロープ・位相含む完全スナップショット）
+  // patch_idx: 各スロットのpatchポインタを配列インデックスに変換して保存
+  void getFullState(OPLL* dest, uint8_t* patch_idx) {
+    if (!opll) return;
+    memcpy(dest, opll, sizeof(OPLL));
+    for (int i = 0; i < 18; i++)
+      patch_idx[i] = (uint8_t)(opll->slot[i].patch - opll->patch);
+  }
+
+  // OPLL内部状態を丸ごと復元。convポインタは現在のものを維持し、
+  // slot[].patchは保存したインデックスから自分のpatch配列へ付け替える
+  void setFullState(const OPLL* src, const uint8_t* patch_idx) {
+    if (!opll) return;
+    OPLL_RateConv* keepConv = opll->conv;
+    memcpy(opll, src, sizeof(OPLL));
+    opll->conv = keepConv;
+    for (int i = 0; i < 18; i++)
+      opll->slot[i].patch = &opll->patch[patch_idx[i] < 38 ? patch_idx[i] : 0];
     clearBuffer();
   }
 
@@ -854,12 +897,101 @@ void loadSRAMfromFile(int slotNumber) {
   flashStatus("SRAM Loaded!", 1000);
 }
 
+// ── ステートセーブ関数群 ──────────────────────────────────────────────────────
+
+String getStateFilePath() {
+  if (current_rom_path.length() == 0) return "/ROM/SAVE/default_st.sav";
+  int slash = current_rom_path.lastIndexOf('/');
+  String name = (slash == -1) ? current_rom_path : current_rom_path.substring(slash + 1);
+  int dot = name.lastIndexOf('.');
+  if (dot != -1) name = name.substring(0, dot);
+  return "/ROM/SAVE/" + name + "_st.sav";
+}
+
+// 現在のエミュレータ状態をPSRAMバッファに保存
+void saveStateToPSRAM() {
+  if (!g_psram_state || !smsVdp) return;
+  memcpy(g_psram_state->magic, "SMS2", 4);
+  smsVdp->saveState(g_psram_state->vdp);
+  memcpy(&g_psram_state->cpu_state, &cpu, sizeof(Z80));
+  memcpy(g_psram_state->ram,       main_ram, 0x2000);
+  memcpy(g_psram_state->sram_data, cart_ram, sizeof(cart_ram));
+  for (int i = 0; i < 3; i++)
+    g_psram_state->bank_regs[i] = (uint8_t)((bank_ptrs[i] - game_rom_ptr) / 0x4000);
+  g_psram_state->sram_enabled  = sram_enabled;
+  g_psram_state->sram_bank     = sram_bank;
+  g_psram_state->mapper_type   = (uint8_t)smsMapper;
+  g_psram_state->mapper_locked = sega_mapper_locked;
+  if (fmGen) fmGen->getFullState(&g_psram_state->fm_opll, g_psram_state->fm_patch_idx);
+  g_psram_state->ym2413_en  = ym2413_enabled;
+  g_psram_state->psg2scc_en = psg2scc;
+  g_psram_state->valid = true;
+  flashStatus("STATE SAVED", 800);
+}
+
+// PSRAMバッファからエミュレータ状態を復元
+void loadStateFromPSRAM() {
+  if (!g_psram_state || !g_psram_state->valid || !smsVdp) {
+    flashStatus("NO STATE", 1000);
+    return;
+  }
+  smsVdp->loadState(g_psram_state->vdp);
+  memcpy(&cpu,      &g_psram_state->cpu_state, sizeof(Z80));
+  memcpy(main_ram,  g_psram_state->ram,        0x2000);
+  memcpy(cart_ram,  g_psram_state->sram_data,  sizeof(cart_ram));
+  for (int i = 0; i < 3; i++)
+    bank_ptrs[i] = &game_rom_ptr[g_psram_state->bank_regs[i] * 0x4000];
+  sram_enabled     = g_psram_state->sram_enabled;
+  sram_bank        = g_psram_state->sram_bank;
+  smsMapper        = (SmsMapperType)g_psram_state->mapper_type;
+  sega_mapper_locked = g_psram_state->mapper_locked;
+  ym2413_enabled   = g_psram_state->ym2413_en;
+  psg2scc          = g_psram_state->psg2scc_en;
+  if (fmGen) fmGen->setFullState(&g_psram_state->fm_opll, g_psram_state->fm_patch_idx);
+  update_memory_map();
+  flashStatus("STATE LOADED", 800);
+}
+
+// PSRAMバッファの内容をSDカードに書き出す
+void saveStateToSD() {
+  if (!g_psram_state || !g_psram_state->valid) {
+    flashStatus("NO STATE IN PSRAM", 1500);
+    return;
+  }
+  if (!SD.exists("/ROM/SAVE")) SD.mkdir("/ROM/SAVE");
+  String path = getStateFilePath();
+  File f = SD.open(path, FILE_WRITE);
+  if (!f) { flashStatus("STATE SD WRITE FAIL", 2000); return; }
+  f.write((const uint8_t*)g_psram_state, sizeof(SaveState));
+  f.close();
+  flashStatus("STATE -> SD OK", 1000);
+}
+
+// SDカードからPSRAMバッファに読み込み、そのまま復元する
+void loadStateFromSD() {
+  if (!g_psram_state) return;
+  String path = getStateFilePath();
+  if (!SD.exists(path)) { flashStatus("NO STATE FILE", 1500); return; }
+  File f = SD.open(path, FILE_READ);
+  if (!f) { flashStatus("STATE SD READ FAIL", 2000); return; }
+  f.read((uint8_t*)g_psram_state, sizeof(SaveState));
+  f.close();
+  if (memcmp(g_psram_state->magic, "SMS2", 4) != 0) {
+    g_psram_state->valid = false;
+    flashStatus("STATE FILE CORRUPT", 2000);
+    return;
+  }
+  flashStatus("SD -> PSRAM OK", 1000);  // 復元はF6で行う
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 uint8_t kbdJoyState = 0x3F;
 char msgBuf[32];
 void updateKeyboard() {
   static bool isBreak = false;
   static bool isE0 = false;
   static bool isShift = false;
+  static bool f5_held = false;
   static bool f6_held = false;
   static bool f7_held = false;
   static bool f8_held = false;
@@ -889,13 +1021,22 @@ void updateKeyboard() {
       isShift = !isBreak;
     }
 
-    if (sc == 0x0B) {  // F6
+    if (sc == 0x03) {  // F5
+      if (!isBreak && !f5_held) {
+        f5_held = true;
+        if (isShift) {
+          saveStateToSD();        // SHIFT+F5: PSRAM→SD書き出し
+        } else {
+          loadStateFromSD();      // F5: SDからロードして復元
+        }
+      } else if (isBreak) f5_held = false;
+    } else if (sc == 0x0B) {  // F6
       if (!isBreak && !f6_held) {
         f6_held = true;
         if (isShift) {
-          // todo anything
+          saveStateToPSRAM();     // SHIFT+F6: PSRAMに保存
         } else {
-          // todo anything
+          loadStateFromPSRAM();   // F6: PSRAMから復元
         }
       } else if (isBreak) f6_held = false;
     } else if (sc == 0x83) {  // F7
@@ -911,7 +1052,12 @@ void updateKeyboard() {
           sprintf(msgBuf, "DISPLAY TIMING %d", renderCounter);
           flashStatus(msgBuf, 1000);
         } else {
-          // todo anything
+          // SHIFT+F7: VDPレジスタのデバッグ表示（スクロールロック調査用）
+          if (smsVdp) {
+            sprintf(msgBuf, "R0=%02X R1=%02X R8=%02X R9=%02X",
+                    smsVdp->reg_[0], smsVdp->reg_[1], smsVdp->reg_[8], smsVdp->reg_[9]);
+            flashStatus(msgBuf, 3000);
+          }
         }
       } else if (isBreak) f7_held = false;
     } else if (sc == 0x0A) {  // F8
@@ -1384,6 +1530,14 @@ void setup() {
 
   main_ram = (uint8_t*)heap_caps_malloc(0x2000, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   memset(main_ram, 0, 0x2000);
+
+  g_psram_state = (SaveState*)ps_malloc(sizeof(SaveState));
+  if (g_psram_state) {
+    memset(g_psram_state, 0, sizeof(SaveState));
+    Serial.printf("SaveState allocated: %d bytes\n", sizeof(SaveState));
+  } else {
+    Serial.println("SaveState PSRAM alloc FAILED!");
+  }
 
   DisplayController.begin();
   DisplayController.setResolution(VGA_320x200_70Hz, -1, -1, false);

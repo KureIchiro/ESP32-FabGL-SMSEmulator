@@ -851,3 +851,36 @@ void IRAM_ATTR VDP::flip_buffer() {
 		active_raster = rasterbuffer0;
 	}
 }
+
+void VDP::saveState(VDPState& s) const {
+	memcpy(s.vram,  vram,  16384);
+	memcpy(s.reg,   reg_,  16);
+	memcpy(s.cram,  cram,  32);
+	s.vaddr        = vaddr_;
+	s.vcode        = vcode_;
+	s.vlatch       = vlatch_;
+	s.vcmd         = vcmd_;
+	s.rbuf         = rbuf_;
+	s.linecnt      = linecnt_;
+	s.status       = status_;
+	s.vint_pending = vint_pending_;
+	s.hint_pending = hint_pending_;
+	s.read_mode    = read_mode;
+}
+
+void VDP::loadState(const VDPState& s) {
+	memcpy(vram,   s.vram,  16384);
+	memcpy(reg_,   s.reg,   16);
+	memcpy(cram,   s.cram,  32);
+	memcpy(cramRGB, s.cram, 32);  // cramRGB はCRAMと同値で再構築
+	vaddr_        = s.vaddr;
+	vcode_        = s.vcode;
+	vlatch_       = s.vlatch;
+	vcmd_         = s.vcmd;
+	rbuf_         = s.rbuf;
+	linecnt_      = s.linecnt;
+	status_       = s.status;
+	vint_pending_ = s.vint_pending;
+	hint_pending_ = s.hint_pending;
+	read_mode     = s.read_mode;
+}
