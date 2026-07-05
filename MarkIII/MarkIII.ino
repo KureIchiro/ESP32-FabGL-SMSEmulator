@@ -173,6 +173,7 @@ void initSCCPresets() {
 // for mark3
 String selectedRom;
 std::vector<String> romFiles;
+String current_dir = "/ROM";
 uint8_t sms_joy_state_a = 0xFF;
 uint8_t sms_joy_state_b = 0xFF;
 uint8_t sms_memory_control = 0x00;
@@ -197,6 +198,8 @@ SmsMapperType smsMapper = SMS_MAPPER_SEGA;
 uint32_t bank_mask = 0;
 bool sega_mapper_locked = false;
 uint8_t* mem_read_map[64];
+std::vector<String> cachedRomFiles;
+String cachedDir = "";
 
 //VDP
 volatile bool frameReady = false;
@@ -1173,32 +1176,55 @@ void IRAM_ATTR updateController() {
 }
 
 void listROMs() {
-  romFiles.clear();
-
-  if (!SD.exists("/ROM")) {
-    SD.mkdir("/ROM");
+  if (cachedDir == current_dir && !cachedRomFiles.empty()) {
+    romFiles = cachedRomFiles;
     return;
   }
 
-  File romDir = SD.open("/ROM");
-  if (!romDir) return;
+  romFiles.clear();
 
-  while (File file = romDir.openNextFile()) {
-    if (!file.isDirectory()) {
-      String name = file.name();
-      String ext = name.substring(name.lastIndexOf('.') + 1);
-      ext.toUpperCase();
+  const String EXT_SMS = "SMS";
+  const String EXT_SG = "SG";
 
-      if (ext == "SMS" || ext == "SG") {
-        romFiles.push_back(name);
+  if (!SD.exists(current_dir.c_str())) {
+    if (current_dir == "/ROM") { SD.mkdir("/ROM"); return; }
+    else { current_dir = "/ROM"; }
+  }
+
+  if (current_dir != "/ROM" && current_dir != "/ROM/") {
+    romFiles.push_back("..");
+  }
+
+  File dir = SD.open(current_dir.c_str());
+  if (!dir || !dir.isDirectory()) return;
+
+  while (File file = dir.openNextFile()) {
+    String name = file.name();
+    
+    if (file.isDirectory()) {
+      romFiles.push_back(name + "/");
+    } else {
+      int dotIdx = name.lastIndexOf('.');
+      if (dotIdx != -1) {
+        String ext = name.substring(dotIdx + 1);
+        ext.toUpperCase(); 
+        if (ext == EXT_SMS || ext == EXT_SG) {
+          romFiles.push_back(name);
+        }
       }
     }
     file.close();
   }
+  dir.close();
+
+  cachedRomFiles = romFiles;
+  cachedDir = current_dir;
 }
 
 void selectRomMenu() {
+  current_dir = "/ROM";
   listROMs();
+  
   if (romFiles.empty()) {
     canvas->setBrushColor(RGB888(0, 0, 85));
     canvas->clear();
@@ -1221,7 +1247,7 @@ void selectRomMenu() {
   while (!selected) {
     if (cursor < topIndex) topIndex = cursor;
     if (cursor >= topIndex + maxRows) topIndex = cursor - maxRows + 1;
-
+    
     if (topIndex != prevTopIndex) {
       needRedrawAll = true;
       prevTopIndex = topIndex;
@@ -1230,7 +1256,6 @@ void selectRomMenu() {
     if (needRedrawAll) {
       canvas->setBrushColor(RGB888(0, 0, 85));
       canvas->clear();
-
       canvas->setPenColor(RGB888(255, 255, 255));
       canvas->drawText(40, 5, "--- SEGA MARK3 ROM SELECTOR ---");
 
@@ -1268,9 +1293,12 @@ void selectRomMenu() {
       }
     }
 
-    canvas->swapBuffers();
+    if (needRedrawAll || prevCursor != cursor) {
+      canvas->swapBuffers();
+    }
     prevCursor = cursor;
     bool keyPressed = false;
+    bool doSelect = false;
 
     int sc;
     static bool isBreak = false;
@@ -1289,8 +1317,7 @@ void selectRomMenu() {
           if (cursor < (int)romFiles.size() - 1) cursor++;
           keyPressed = true;
         } else if (sc == 0x1A || sc == 0x22 || sc == 0x5A) {
-          selectedRom = "/ROM/" + romFiles[cursor];
-          selected = true;
+          doSelect = true; // Z, X, Enterキー
           keyPressed = true;
         }
       }
@@ -1313,7 +1340,31 @@ void selectRomMenu() {
       } else if (ctrlPressed & (1 << 1)) {
         if (cursor < (int)romFiles.size() - 1) cursor++;
       } else if (ctrlPressed & ((1 << 4) | (1 << 5))) {
-        selectedRom = "/ROM/" + romFiles[cursor];
+        doSelect = true;
+      }
+    }
+
+    if (doSelect) {
+      String chosen = romFiles[cursor];
+      
+      if (chosen == "..") {
+        int lastSlash = current_dir.lastIndexOf('/');
+        if (lastSlash > 0) {
+          current_dir = current_dir.substring(0, lastSlash);
+        } else {
+          current_dir = "/ROM";
+        }
+        listROMs();
+        cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true;
+      } else if (chosen.endsWith("/")) {
+        String folderName = chosen.substring(0, chosen.length() - 1);
+        if (current_dir.endsWith("/")) current_dir += folderName;
+        else current_dir += "/" + folderName;
+        listROMs();
+        cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true;
+      } else {
+        if (current_dir.endsWith("/")) selectedRom = current_dir + chosen;
+        else selectedRom = current_dir + "/" + chosen;
         selected = true;
       }
     }
@@ -1329,8 +1380,7 @@ void selectRomMenu() {
       }
       current_rom_path = selectedRom;
     }
-
-    delay(125);
+    delay(10);
   }
 
   if (kbd) {
@@ -1540,7 +1590,7 @@ void setup() {
 
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
 
-  if (SD.begin(SD_CS, SPI)) {
+  if (SD.begin(SD_CS, SPI, 40000000)) {
     selectRomMenu();
 
     if (selectedRom != "") {
