@@ -1380,7 +1380,7 @@ void selectRomMenu() {
       }
       current_rom_path = selectedRom;
     }
-    delay(10);
+    delay(80);
   }
 
   if (kbd) {
