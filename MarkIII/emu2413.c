@@ -1044,7 +1044,7 @@ static void OPLL_update_output(OPLL *opll) {
   } else {
     if (!(opll->mask & OPLL_MASK_BD)) {
       int16_t feedback = calc_slot_mod(opll, 6);
-      opll->ch_out[9] = (calc_slot_car(opll, 6, feedback) << 2) / 3;
+      opll->ch_out[9] = (calc_slot_car(opll, 6, feedback) << 1);
     }
     uint8_t noise = opll->noise & 1;
     if (!(opll->mask & OPLL_MASK_HH)) {
@@ -1057,7 +1057,7 @@ static void OPLL_update_output(OPLL *opll) {
       opll->ch_out[12] = calc_slot_tom(opll);
     }
     if (!(opll->mask & OPLL_MASK_CYM)) {
-      opll->ch_out[13] = calc_slot_cym(opll, opll->short_noise);
+      opll->ch_out[13] = (calc_slot_cym(opll, opll->short_noise) * 3) >> 1;
     }
     calc_slot_mod(opll, 7);
     calc_slot_mod(opll, 8);

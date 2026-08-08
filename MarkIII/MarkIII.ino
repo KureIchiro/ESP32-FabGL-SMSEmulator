@@ -83,7 +83,7 @@
 #include "vdp.h"
 #include "emu2413.h"
 
-#define USE_SERIAL_DEBUG
+//#define USE_SERIAL_DEBUG
 //#define USE_SIGNAL_DEBUG
 
 // TTGO VGA32
