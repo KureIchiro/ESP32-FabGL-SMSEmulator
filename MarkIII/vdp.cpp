@@ -1,3 +1,14 @@
+// 【最適化】Arduinoのesp32コアは既定で -Os。renderBGのピクセル本体は
+// 4つの8bit値に対する24回のシフト/マスク/OR で、-Os はまさにここで必要な
+// スケジューリングとレジスタ割り付けの妥協を抑制してしまう。
+// 8倍アンロールはテキストで展開済みなので -Os でも効いており、これは
+// ループ構造ではなく「本体」の話。
+// ※【注意】このファイルは IRAM_ATTR が23個あり、O3でコードが膨らむと
+//   リンク時に IRAM 溢れ("region `iram0_0_seg' overflowed")になる可能性がある。
+//   その場合はこの1行を消し、代わりに renderBG と renderSprites の定義に
+//   __attribute__((optimize("O3"))) を個別に付けること。
+#pragma GCC optimize("O3")
+
 #include "vdp.h"
 #include <stdio.h>
 #include <stdint.h>
@@ -28,6 +39,8 @@ static const uint8_t tms9918a_fixed_palette[16] = {
 	0x3F   // 15:(White)
 };
 
+static void buildBgTables();   // BG用LUTの初期化(renderBGの手前で定義)
+
 VDP::VDP(uint8_t *vram_buf, uint8_t *cram_buf, uint8_t *cramRGB_buf, uint8_t *reg_buf) {
 	vram = vram_buf;
 	cram = cram_buf;
@@ -35,6 +48,7 @@ VDP::VDP(uint8_t *vram_buf, uint8_t *cram_buf, uint8_t *cramRGB_buf, uint8_t *re
 	reg_ = reg_buf;
 	active_raster = rasterbuffer0;
 	visible_raster = rasterbuffer1;
+	buildBgTables();
 	reset();
 }
 
@@ -128,29 +142,71 @@ uint8_t IRAM_ATTR VDP::readControl() {
 	return ret;
 }
 
-void IRAM_ATTR VDP::renderLine(int y, uint8_t *line_buf) {
-	uint8_t bg_color_idx = 16 + (reg_[7] & 0x0F);
+// ---------------------------------------------------------------------------
+// BG描画（LUT版）
+//   旧実装は1ピクセルごとに「4プレーンから1bitずつ抜いて並べる」を8回
+//   繰り返していた(シフト/AND/ORで1ピクセル約18演算)。
+//   ここでは4bitのニブルを「4ピクセル分のbit0」に展開する表を引き、
+//   4プレーン分を 0/1/2/3 ビットずらしてORするだけで、4ピクセル分の
+//   カラー番号(各バイト 0〜15)が1ワードで得られる。
+//     s_nib_fwd[n] : ピクセルk ← n の bit(3-k)  (通常。MSBが左)
+//     s_nib_rev[n] : ピクセルk ← n の bit(k)    (左右反転)
+//   ・通常   : ピクセル0-3 = 上位ニブル fwd、ピクセル4-7 = 下位ニブル fwd
+//   ・左右反転: ピクセル0-3 = 下位ニブル rev、ピクセル4-7 = 上位ニブル rev
+//   bginfo(=カラー番号|優先bit)はそのワードに優先bitをORして2ワード書くだけ。
+//
+//   細かいスクロール(fine)はタイル単位に揃えた作業域(33タイル=264ドット)へ
+//   描いてから fine だけずらして参照する。これで全ストアが4バイト整列になり、
+//   画面端の範囲チェックも不要になる。
+// ---------------------------------------------------------------------------
+#define BG_SCRATCH_W (33 * 8)
+static uint32_t s_nib_fwd[16], s_nib_rev[16];
+static uint8_t  s_bgpx[BG_SCRATCH_W] __attribute__((aligned(4)));
+static uint8_t  s_bgin[BG_SCRATCH_W] __attribute__((aligned(4)));
 
-	if (!(reg_[1] & 0x40)) {
-		uint8_t bg = cramRGB[bg_color_idx];
-		memset(line_buf, bg, SCREEN_W);
-		return;
-	}
-
-	uint8_t bginfo[SCREEN_W];
-	memset(bginfo, 0, SCREEN_W);
-
-	renderBG(y, line_buf, bginfo);
-	renderSprites(y, line_buf, bginfo);
-
-	if (reg_[0] & 0x20) {
-		//uint8_t bg = cramRGB[bg_color_idx];
-		//memset(line_buf, bg, 8);
-		memset(line_buf, 0, 8);
+static void buildBgTables() {
+	for (int n = 0; n < 16; n++) {
+		uint32_t f = 0, r = 0;
+		for (int k = 0; k < 4; k++) {
+			if ((n >> (3 - k)) & 1) f |= 1u << (8 * k);
+			if ((n >> k) & 1)       r |= 1u << (8 * k);
+		}
+		s_nib_fwd[n] = f;
+		s_nib_rev[n] = r;
 	}
 }
 
-void IRAM_ATTR VDP::renderBG(int y, uint8_t *px, uint8_t *bginfo) {
+// 1ライン分を s_bgpx に描く。戻り値は fine(0〜7)。
+// 表示用の256ドットは s_bgpx + fine から始まる。
+int IRAM_ATTR VDP::renderLineScratch(int y) {
+	if (!(reg_[1] & 0x40)) {
+		uint8_t bg = cramRGB[16 + (reg_[7] & 0x0F)];
+		memset(s_bgpx, bg, SCREEN_W);
+		return 0;
+	}
+
+	int fine = renderBG(y, s_bgpx, s_bgin);
+	uint8_t *px = s_bgpx + fine;
+	renderSprites(y, px, s_bgin + fine);
+
+	// R0 bit5: 左端8ドットを隠す。実機はバックドロップ色(スプライト側パレットの
+	// R7下位4bit番目)で塗る。画面OFF時の塗りつぶしと同じ色。
+	if (reg_[0] & 0x20) {
+		memset(px, cramRGB[16 + (reg_[7] & 0x0F)], 8);
+	}
+	return fine;
+}
+
+void IRAM_ATTR VDP::renderLine(int y, uint8_t *line_buf) {
+	int fine = renderLineScratch(y);
+	memcpy(line_buf, s_bgpx + fine, SCREEN_W);
+}
+
+// 作業域 px/bginfo(ともに BG_SCRATCH_W バイト、4バイト整列)へ33タイルを
+// タイル境界どおりに描く。戻り値 fine = 画面x=0 が作業域のどこに来るか。
+// ※fine は y<16 の横スクロール固定(reg0 bit6)を反映した値なので、
+//   呼び出し側で再計算してはいけない。
+int IRAM_ATTR VDP::renderBG(int y, uint8_t *px, uint8_t *bginfo) {
 	const uint16_t nt = ntBase();
 	const int scx = ((reg_[0] & 0x40) && y < 16) ? 0 : reg_[8];
 
@@ -159,129 +215,61 @@ void IRAM_ATTR VDP::renderBG(int y, uint8_t *px, uint8_t *bginfo) {
 	int tcol0 = bg0 >> 3;
 
 	const uint8_t *vram_ptr = vram;
+	const uint32_t *F = s_nib_fwd;
+	const uint32_t *R = s_nib_rev;
 	int current_scy_base = reg_[9] % 224;
 	bool v_lock = (reg_[0] & 0x80);
+	const bool small_nt = !(reg_[2] & 0x01);
 
-	for (int tc = 0; tc <= 32; tc++) {
-		int start_sx = tc * 8 - fine;
-		if (start_sx <= -8 || start_sx >= SCREEN_W) continue;
+	uint32_t *opx = (uint32_t *)px;
+	uint32_t *obi = (uint32_t *)bginfo;
+
+	for (int tc = 0; tc <= 32; tc++, opx += 2, obi += 2) {
 		int col = (tcol0 + tc) & 31;
 		int current_scy = (v_lock && tc >= 24) ? 0 : current_scy_base;
 		int sum_y = y + current_scy;
 		int eff_y = (sum_y >= 224) ? sum_y - 224 : sum_y;
 		int row = eff_y >> 3;
-		if (!(reg_[2] & 0x01)) row &= ~0x10;
-		int tile_row = row * 32;
+		if (small_nt) row &= ~0x10;
 		int tile_y = eff_y & 7;
-		uint16_t na = (nt + (tile_row + col) * 2) & 0x3FFF;
+		uint16_t na = (nt + (row * 32 + col) * 2) & 0x3FFF;
 		uint16_t n_val = *(const uint16_t *)&vram_ptr[na];
 		uint16_t tile = n_val & 0x01FF;
 		bool hflip = n_val & 0x0200;
 		bool vflip = n_val & 0x0400;
-		uint8_t pal_b = (n_val & 0x0800) ? 16 : 0;
-		uint8_t pri_bit = (n_val & 0x1000) ? 0x10 : 0x00;
+		const uint8_t *pal = &cramRGB[(n_val & 0x0800) ? 16 : 0];
+		uint32_t pri4 = (n_val & 0x1000) ? 0x10101010u : 0u;
 		int ty = vflip ? (7 - tile_y) : tile_y;
 		uint16_t ta = ((tile << 5) | (ty << 2)) & 0x3FFF;
 		uint32_t b32 = *(const uint32_t *)&vram_ptr[ta];
-		uint8_t b0 = b32 & 0xFF;
-		uint8_t b1 = (b32 >> 8) & 0xFF;
-		uint8_t b2 = (b32 >> 16) & 0xFF;
-		uint8_t b3 = (b32 >> 24) & 0xFF;
 
-		if (start_sx < 0 || start_sx > SCREEN_W - 8) {
-			if (!hflip) {
-#define BG_EDGE_NO_FLIP(pp) \
-	do { \
-		int sx = start_sx + pp; \
-		if (sx >= 0 && sx < SCREEN_W) { \
-			uint8_t idx = ((b0 >> 7) & 1) | (((b1 >> 7) & 1) << 1) | (((b2 >> 7) & 1) << 2) | (((b3 >> 7) & 1) << 3); \
-			px[sx] = cramRGB[pal_b + idx]; \
-			bginfo[sx] = idx | pri_bit; \
-		} \
-		b0 <<= 1; \
-		b1 <<= 1; \
-		b2 <<= 1; \
-		b3 <<= 1; \
-	} while (0)
-				BG_EDGE_NO_FLIP(0);
-				BG_EDGE_NO_FLIP(1);
-				BG_EDGE_NO_FLIP(2);
-				BG_EDGE_NO_FLIP(3);
-				BG_EDGE_NO_FLIP(4);
-				BG_EDGE_NO_FLIP(5);
-				BG_EDGE_NO_FLIP(6);
-				BG_EDGE_NO_FLIP(7);
-#undef BG_EDGE_NO_FLIP
-			} else {
-#define BG_EDGE_FLIP(pp) \
-	do { \
-		int sx = start_sx + pp; \
-		if (sx >= 0 && sx < SCREEN_W) { \
-			uint8_t idx = (b0 & 1) | ((b1 & 1) << 1) | ((b2 & 1) << 2) | ((b3 & 1) << 3); \
-			px[sx] = cramRGB[pal_b + idx]; \
-			bginfo[sx] = idx | pri_bit; \
-		} \
-		b0 >>= 1; \
-		b1 >>= 1; \
-		b2 >>= 1; \
-		b3 >>= 1; \
-	} while (0)
-				BG_EDGE_FLIP(0);
-				BG_EDGE_FLIP(1);
-				BG_EDGE_FLIP(2);
-				BG_EDGE_FLIP(3);
-				BG_EDGE_FLIP(4);
-				BG_EDGE_FLIP(5);
-				BG_EDGE_FLIP(6);
-				BG_EDGE_FLIP(7);
-#undef BG_EDGE_FLIP
-			}
+		// プレーンpの上位/下位ニブル
+		uint32_t h0 = (b32 >>  4) & 15, l0 =  b32        & 15;
+		uint32_t h1 = (b32 >> 12) & 15, l1 = (b32 >>  8) & 15;
+		uint32_t h2 = (b32 >> 20) & 15, l2 = (b32 >> 16) & 15;
+		uint32_t h3 = (b32 >> 28),      l3 = (b32 >> 24) & 15;
+
+		uint32_t c0, c1;   // ピクセル0-3 / 4-7 のカラー番号(各バイト0〜15)
+		if (!hflip) {
+			c0 = F[h0] | (F[h1] << 1) | (F[h2] << 2) | (F[h3] << 3);
+			c1 = F[l0] | (F[l1] << 1) | (F[l2] << 2) | (F[l3] << 3);
 		} else {
-			if (!hflip) {
-#define BG_MID_NO_FLIP(pp) \
-	do { \
-		int sx = start_sx + pp; \
-		uint8_t idx = ((b0 >> 7) & 1) | (((b1 >> 7) & 1) << 1) | (((b2 >> 7) & 1) << 2) | (((b3 >> 7) & 1) << 3); \
-		b0 <<= 1; \
-		b1 <<= 1; \
-		b2 <<= 1; \
-		b3 <<= 1; \
-		px[sx] = cramRGB[pal_b + idx]; \
-		bginfo[sx] = idx | pri_bit; \
-	} while (0)
-				BG_MID_NO_FLIP(0);
-				BG_MID_NO_FLIP(1);
-				BG_MID_NO_FLIP(2);
-				BG_MID_NO_FLIP(3);
-				BG_MID_NO_FLIP(4);
-				BG_MID_NO_FLIP(5);
-				BG_MID_NO_FLIP(6);
-				BG_MID_NO_FLIP(7);
-#undef BG_MID_NO_FLIP
-			} else {
-#define BG_MID_FLIP(pp) \
-	do { \
-		int sx = start_sx + pp; \
-		uint8_t idx = (b0 & 1) | ((b1 & 1) << 1) | ((b2 & 1) << 2) | ((b3 & 1) << 3); \
-		b0 >>= 1; \
-		b1 >>= 1; \
-		b2 >>= 1; \
-		b3 >>= 1; \
-		px[sx] = cramRGB[pal_b + idx]; \
-		bginfo[sx] = idx | pri_bit; \
-	} while (0)
-				BG_MID_FLIP(0);
-				BG_MID_FLIP(1);
-				BG_MID_FLIP(2);
-				BG_MID_FLIP(3);
-				BG_MID_FLIP(4);
-				BG_MID_FLIP(5);
-				BG_MID_FLIP(6);
-				BG_MID_FLIP(7);
-#undef BG_MID_FLIP
-			}
+			c0 = R[l0] | (R[l1] << 1) | (R[l2] << 2) | (R[l3] << 3);
+			c1 = R[h0] | (R[h1] << 1) | (R[h2] << 2) | (R[h3] << 3);
 		}
+
+		obi[0] = c0 | pri4;
+		obi[1] = c1 | pri4;
+		opx[0] =  (uint32_t)pal[ c0        & 15]
+		       | ((uint32_t)pal[(c0 >>  8) & 15] <<  8)
+		       | ((uint32_t)pal[(c0 >> 16) & 15] << 16)
+		       | ((uint32_t)pal[ c0 >> 24      ] << 24);
+		opx[1] =  (uint32_t)pal[ c1        & 15]
+		       | ((uint32_t)pal[(c1 >>  8) & 15] <<  8)
+		       | ((uint32_t)pal[(c1 >> 16) & 15] << 16)
+		       | ((uint32_t)pal[ c1 >> 24      ] << 24);
 	}
+	return fine;
 }
 
 void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
@@ -404,8 +392,54 @@ void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ビューポート直描き（MODE4専用）
+//   以前は PSRAM 上のラスタ(VDPオブジェクトごとPSRAMに載っている)へ描き、
+//   コア1が drawBitmap で 1ピクセルずつビューポートへ写していた。これが
+//   1フレーム約14,200us(コア1)＋PSRAMへの49KB書き込み(コア0)を食っていた。
+//   内部RAMの行バッファへ描いて、そのまま FabGL のビューポート行へ書き出す。
+//   ・FabGLの1ワード内の並びは px2,px3,px0,px1 → 16bit回転で一発
+//   ・cramRGB は SMS の --BBGGRR で FabGL の RGB222 と同じ並び。
+//     上位2bit(同期)だけ FabGL の値を OR する(drawBitmap も同じことをしていた)
+//   ・表示用の256ドットは作業域 s_bgpx の fine(0〜7) バイト目から始まるので、
+//     4バイト境界からのずれ(fine&3)を2ワードのシフト合成で吸収して読む。
+//     (memcpyで揃え直すより速く、作業域は264バイトあるので末尾も読み越さない)
+// ---------------------------------------------------------------------------
+static uint8_t **s_direct_rows = nullptr;
+static uint32_t  s_direct_sync = 0;
+
+void VDP::setDirectOutput(uint8_t **rows, uint8_t syncBits) {
+	s_direct_sync = (uint32_t)(syncBits & 0xC0) * 0x01010101u;
+	s_direct_rows = rows;
+}
+
 void IRAM_ATTR VDP::renderSingleLine(int y) {
 	if (y < 0 || y >= SCREEN_H) return;
+
+	uint8_t **rows = s_direct_rows;
+	if (rows != nullptr) {
+		int fine = renderLineScratch(y);
+		const uint32_t *s = (const uint32_t *)(s_bgpx + (fine & ~3));
+		uint32_t *d = (uint32_t *)rows[y];
+		const uint32_t sync = s_direct_sync;
+		const int sh = (fine & 3) * 8;
+		if (sh == 0) {
+			for (int k = 0; k < SCREEN_W / 4; k++) {
+				uint32_t w = (s[k] & 0x3F3F3F3Fu) | sync;
+				d[k] = (w >> 16) | (w << 16);
+			}
+		} else {
+			// リトルエンディアン: 下位バイトが左。a の上側 + b の下側で1ワード。
+			uint32_t a = s[0];
+			for (int k = 0; k < SCREEN_W / 4; k++) {
+				uint32_t b = s[k + 1];
+				uint32_t w = (((a >> sh) | (b << (32 - sh))) & 0x3F3F3F3Fu) | sync;
+				d[k] = (w >> 16) | (w << 16);
+				a = b;
+			}
+		}
+		return;
+	}
 
 	if (active_raster != nullptr) {
 		uint8_t *line_buf = &active_raster[y * SCREEN_W];
@@ -431,8 +465,6 @@ void IRAM_ATTR VDP::scanlineCheck(int y) {
 	}
 }
 
-void IRAM_ATTR VDP::transferFrameToDisplay() {
-}
 
 /*
  *	Draw a horizontal slice of a sprite into the render buffer. If it

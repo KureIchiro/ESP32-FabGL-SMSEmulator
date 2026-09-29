@@ -3,6 +3,17 @@
  * https://github.com/digital-sound-antiques/emu2413
  * Copyright (C) 2020 Mitsutaka Okazaki
  */
+// 【最適化】Arduinoのesp32コアは既定で -Os。このファイルは lookup_wave /
+// to_linear / lookup_exp_table / min / max / calc_slot_mod / calc_slot_car
+// といった10〜50命令の小関数を、1出力サンプルあたり約102回呼ぶ構造で、
+// Xtensaの CALL8/RETW ウィンドウ回転が関数本体と同等のコストになっている。
+// 宣言の INLINE は __inline__ 止まりの「ヒント」で、-Os はこれを無視する。
+// ※このファイルには IRAM_ATTR が1つも無いので、O3でコードが膨らんでも
+//   IRAM溢れのリスクは無い(増えるのはフラッシュ側。約6KB→約11KB)。
+// ※演算は全て整数。浮動小数点は OPLL_RateConv と OPLL_setPanFine だけで、
+//   どちらもこのプロジェクトでは未使用のため音質への影響は無い。
+#pragma GCC optimize("O3")
+
 #include <pgmspace.h>
 #include "esp_attr.h"
 #include "emu2413.h"

@@ -40,8 +40,10 @@ public:
 
     void renderSingleLine(int y);
     void scanlineCheck(int y);
-    
-    void transferFrameToDisplay();
+    // MODE4の描画先をFabGLビューポートに切り替える。rows[y] は画面上の
+    // 描画開始位置(左端オフセット込み)で、4バイト境界であること。
+    // syncBits は createRawPixel(黒) の値(上位2bitだけ使う)。
+    void setDirectOutput(uint8_t **rows, uint8_t syncBits);
 
     // ── H-INT / V-INT ──
     bool     vint_pending_;
@@ -73,8 +75,12 @@ public:
     void flip_buffer();
     
     // ── ダブルバッファ関係 ──
-    uint8_t  rasterbuffer0[SCREEN_W * SCREEN_H];
-    uint8_t  rasterbuffer1[SCREEN_W * SCREEN_H];
+    // 【重要】vint_pending_ / hint_pending_ が bool でオフセット0,1を占めるため、
+    // 何もしないと rasterbuffer0 はオフセット2、つまり4バイト境界に乗らない。
+    // ラスタを32bit単位で読み書きする最適化(ピクセルのLUT化、memcpyのワード
+    // パス化)が全て使えなくなるので、明示的に整列させておく。
+    uint8_t  rasterbuffer0[SCREEN_W * SCREEN_H] __attribute__((aligned(4)));
+    uint8_t  rasterbuffer1[SCREEN_W * SCREEN_H] __attribute__((aligned(4)));
     uint8_t* active_raster;
     uint8_t* visible_raster;
     
@@ -100,7 +106,8 @@ public:
 
 private:
     void renderLine(int y, uint8_t* line_buf);
-    void renderBG(int y, uint8_t* px, uint8_t* bginfo);
+    int  renderLineScratch(int y);                        // 戻り値 fine(0〜7)
+    int  renderBG(int y, uint8_t* px, uint8_t* bginfo);   // 戻り値 fine(0〜7)
     void renderSprites(int y, uint8_t* px, uint8_t* bginfo);
 
     // インラインヘルパー関数群

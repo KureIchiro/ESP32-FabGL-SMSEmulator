@@ -1,8 +1,123 @@
-# Sega Mark III Emulator for ESP32
+# SEGA MarkIII / Master System Emulator for ESP32
 
-🌐 **Language / 言語切り替え**
-- [日本語 (Japanese)](#日本語)
-- [English (英語)](#english)
+[ [English](#english) | [日本語](#日本語) ]
+
+---
+
+<a id="english"></a>
+# English
+
+An emulator for the SEGA MarkIII / Master System using ESP32 and the **FabGL** library (Work in Progress). It supports VGA output, PS/2 keyboards, and serial connection for external controllers.
+
+## 📝 Overview
+
+The goal of this project is to build a "comfortable SEGA MarkIII environment" within the resource constraints of the ESP32.
+- **Frame Rate**: 60 FPS (59.94Hz, every frame rendered)
+- **Audio Limitations**: 
+  - The reproducibility of the FM sound source (especially the rhythm section) is low due to FabGL's sampling rate constraints.
+  - Titles using PSG sampling playback also suffer from lower audio fidelity for the same reason.
+
+> ⚠️ **Notice Regarding Development & Licenses**
+>
+> Most of the main source code is built and modified based on AI-generated code. Therefore, the developer does not completely grasp all internal logic and cannot answer detailed questions regarding source code specifications. Thank you for your understanding.
+> Please refer to the header comments at the beginning of the source code for license details and agree to them before use.
+
+---
+
+## 🤝 Credits & Acknowledgments
+
+Deep gratitude to the authors who published these excellent foundations as open-source.
+
+- **Graphics/Audio Engine**: Uses [FabGL](https://github.com) by Fabrizio Di Vittorio.
+- **Z80 CPU Core**: Modified based on the work by Marat Fayzullin.
+- **VDP Section**: Modified based on the TMS9918A core originally by David Latham and maintained by Marat Fayzullin.
+- **OPLL (YM2413) Sound Core**: Modified based on the work by Mitsutaka Okazaki.
+
+### 📜 Core Licenses
+Each core within this software complies with the policies of FabGL, Marat Fayzullin (**fMSX License**), and Mitsutaka Okazaki (**MIT License / Free License**).
+
+---
+
+## 🛠️ Environment & Build Settings
+
+### Development Environment
+- **Board Manager**: ESP32 by Espressif Systems (**v2.0.5 Recommended**)
+- **Library**: FabGL v1.0.9
+
+### Recommended Arduino IDE Settings
+- **Board**: `ESP32 Dev Module`
+- **PSRAM**: `"Enabled"` (**Required**)
+- **Partition Scheme**: `"Default 4MB with SPIFFS"` or similar
+
+---
+
+## 📂 SD Card Structure & Setup
+
+Please place the following folders and files in the root directory of your MicroSD card.
+The `SAVE` folder and its contents must be created manually before launching the emulator.
+
+```text
+/ (SD Root)
+├── /ROM              : Storage for game ROM files
+│   └── /SAVE         : Storage for state save data
+│       ├── slot1.st  : Save data for Slot 1
+│       ├── slot2.st  : Save data for Slot 2
+│       └── slot3.st  : Save data for Slot 3
+```
+
+---
+
+## 🕹️ Operations Guide (Function Keys)
+
+Please modify the source code to fit your keyboard layout if localization (e.g., key mapping) is required.
+
+### 1. System Operations
+- **`[F12]`** : Pause / Resume (Reproduces the **PAUSE button** on the MarkIII console)
+- **`[Shift] + [F12]`** : Hardware Reset (Reboots the ESP32)
+
+### 2. SRAM Save & Load
+Titles supporting SRAM (backup function) can save and restore their state to the SD card. Supports 3 slots.
+
+- **Load State**: `[F9]` / `[F10]` / `[F11]` (Maps to Slots 1–3 respectively)
+- **Save State**: `[Shift] + [F9]` / `[Shift] + [F10]` / `[Shift] + [F11]` (Maps to Slots 1–3 respectively)
+
+---
+
+## 🔌 Joystick (External Controller) Connection
+
+This project supports Atari-specification (D-Sub 9-pin) controller signals input via the ESP32 serial port (UART).
+
+> 💡 **Joystick Converter Compatibility**
+> 
+> You can reuse the **Atari-to-Serial Joystick Converter hardware/firmware** already published in the MSX1 emulator section of this repository.
+
+### 1. Connection & Communication Specs
+- **Protocol**: RS-232C Serial Communication
+- **Baud Rate**: 115200 bps
+- **Connection Port**: `IO39`
+- **Update Interval**: 16.67ms (Approx. 59.94Hz)
+- **Supported Hardware**: MarkIII Joystick Ports 1 & 2 (1P / 2P)
+
+### 2. Data Format from External Converter
+Receives the following **2-byte binary data** via serial and reflects it onto the MarkIII joystick state in real-time. Data is expected to be transmitted continuously in the order of "1P (Port A) data → 2P (Port B) data".
+
+
+| Bit | Function | Description |
+| :---: | :--- | :--- |
+| **b7** | Port ID | `0` = Port A (1P) / `1` = Port B (2P) |
+| **b6** | Button 3 | `0`: ON / `1`: OFF (**Active Low**) |
+| **b5** | Button 2 | `0`: ON / `1`: OFF |
+| **b4** | Button 1 | `0`: ON / `1`: OFF |
+| **b3** | Right | `0`: ON / `1`: OFF |
+| **b2** | Left | `0`: ON / `1`: OFF |
+| **b1** | Down | `0`: ON / `1`: OFF |
+| **b0** | Up | `0`: ON / `1`: OFF |
+
+---
+
+## Disclaimer
+
+IN NO EVENT SHALL FABRIZIO DI VITTORIO, MARAT FAYZULLIN, DAVID LATHAM, MITSUTAKA OKAZAKI, OR THE DEVELOPER BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE. USE AT YOUR OWN RISK.
 
 ---
 
@@ -11,16 +126,13 @@
 
 ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master System）のエミュレータです（現在開発中）。VGA出力およびPS/2キーボード、シリアル接続による外部コントローラーに対応しています。
 
-### 📺 デモンストレーション
-実際の動作の様子を収めた**デモンストレーションの動画を公開中です**。
-[YouTubeで動画を見る](https://www.youtube.com/watch?v=4cUE6SEUGLs)
-
 ## 📝 概要
 
 本プロジェクトは、ESP32のリソース制約の中で「快適に動作するセガ・マークIII環境」を構築することを目的としています。
-- **ターゲットフレームレート**: 約30FPS
+- **フレームレート**: 60FPS（59.94Hz、全フレーム描画）
 - **サウンドに関する注意点**: 
-  - ESP32のパフォーマンスの制約の為、再現度が低い場合があります。ご了承の上、ご使用ください。
+  - FM音源（特にリズムセクション）は、FabGLのサンプリングレートの制約により再現度が低くなっています。
+  - PSGでサンプリング再生を行っているタイトルについても、同様の理由で再現度が低くなります。
 
 > ⚠️ **開発・ライセンスに関するご注意**
 >
@@ -59,56 +171,32 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 ## 📂 SDカードの構成とセットアップ
 
 MicroSDカードのルートディレクトリに、以下のフォルダおよびファイルを配置してください。
-`SAVE` フォルダは、エミュレータ起動前にあらかじめ作成しておく必要があります。
+`SAVE` フォルダとその中身は、エミュレータ起動前にあらかじめ作成しておく必要があります。
 
 ```text
 / (SD Root)
-├── /ROM                 : ゲームROMファイルなどを格納
-│   └── /SAVE            : ステートセーブデータ保存用フォルダ
-│       ├── ROMファイル名0.sav  : スロット0のセーブデータ
-│       ├── ROMファイル名1.sav  : スロット1のセーブデータ
-│       └── ROMファイル名2.sav  : スロット2のセーブデータ
+├── /ROM              : ゲームROMファイルなどを格納
+│   └── /SAVE         : ステートセーブデータ保存用フォルダ
+│       ├── slot1.st  : スロット1のセーブデータ
+│       ├── slot2.st  : スロット2のセーブデータ
+│       └── slot3.st  : スロット3のセーブデータ
 ```
 
 ---
 
-## 🕹️ 操作ガイド
+## 🕹️ 拡張機能操作ガイド（ファンクションキー）
 
-### 1. 基本操作
+キーボード配列等のローカライズに関しては、各自のキーボード環境に合わせて必要に応じてソースコードを修正してください。
 
-| 入力デバイス | 操作内容 | エミュレータ上の機能 |
-| :--- | :--- | :--- |
-| **キーボード** | **カーソルキー（上下左右）** | 方向キー（上下左右） |
-| | **`[Z]`** | ボタン1 |
-| | **`[X]`** | ボタン2 |
-| **コントローラー** | **ボタン3** | 本体PAUSE（`[F12]` と同じ） |
-| | **ボタン1, 2, 3 同時押し** | ハードウェアリセット（`[Shift] + [F12]` と同じ） |
+### 1. システム操作
+- **`[F12]`** : 一時停止 (Pause) / 再開（マークIII本体の **PAUSEボタン** を再現）
+- **`[Shift] + [F12]`** : ハードウェアリセット (ESP32を再起動します)
 
----
-
-### 2. 拡張機能（ファンクションキー操作）
-
-#### 💡 システム操作
-* **`[F12]`** : 一時停止 (Pause) / 再開（マークIII本体の **PAUSEボタン** を再現）
-* **`[Shift] + [F12]`** : ハードウェアリセット (ESP32を再起動します)
-
-#### 🎨 画面・サウンド調整
-* **`[F7]` : フレームスキップタイミング調整機能**
-  本ソフトはフレームスキップで30FPSを実現しているため、60フレームで交互に表示・消去を繰り返してキャラクターの点滅や半透明を表現するソフトでは、「表示しっぱなし」または「全く表示されない」という現象が起こりえます。
-  その場合にフレームスキップのタイミングを変化させることによって、点滅表示が見えるようにする機能です。
-  `0, 1, 2, 4, 8, 16` フレームごとにタイミングを変化させることが可能です。キャラクターの動作やスクロールががたついて見える可能性もあるため、調整してご使用ください。
-* **`[F8]` : 擬似SCC音源 有効/無効**
-  PSGにしか対応していないソフトでも、プリセットの音色でSCC音源を鳴らすことができる機能です。
-  *※FM音源に対応したソフトではOFFにしてご使用ください。*
-* **`[Shift] + [F8]` : スプライト制限解除**
-  スプライトの横8個制限をなくします。
-
-#### 💾 SRAMセーブ＆ロード
+### 2. SRAMセーブ＆ロード
 SRAM（バックアップ機能）に対応したタイトルは、その内容をSDカードへ保存・復元できます。3つのスロットに対応しています。
-*※ソフト起動時に自動的にロードされるわけではありません。*
 
-* **状態のロード**: `[F9]` / `[F10]` / `[F11]`（それぞれスロット2〜0に対応）
-* **状態のセーブ**: `[Shift] + [F9]` / `[Shift] + [F10]` / `[Shift] + [F11]`（それぞれスロット2〜0に対応）
+- **状態のロード**: `[F9]` / `[F10]` / `[F11]`（それぞれスロット1〜3に対応）
+- **状態のセーブ**: `[Shift] + [F9]` / `[Shift] + [F10]` / `[Shift] + [F11]`（それぞれスロット1〜3に対応）
 
 ---
 
@@ -118,22 +206,23 @@ SRAM（バックアップ機能）に対応したタイトルは、その内容�
 
 > 💡 **ジョイスティックコンバータの互換性について**
 > 
-> 外部コントローラーの接続に使用する **アタリ仕様→シリアル変換器のハードウェアおよびファームウェア** は、MSX1エミュレータ部分で公開しているものがそのまま流用可能です。
+> 外部コントローラーの接続に使用する **アタリ仕様→シリアル変換器のハードウェアおよびファームウェア** は、本リポジトリ内のMSX1エミュレータ部分で公開しているものがそのまま流用可能です。
 
 ### 1. 接続・通信仕様
 - **通信規格**: RS-232C シリアル通信
 - **ボーレート**: 115200 bps
 - **接続ポート**: `IO39`
-- **更新周期**: 33.34ms (約29.97Hz)
+- **更新周期**: 16.67ms (約59.94Hz)
 - **対応ハード**: マークIII ジョイスティックポート1・2（1P / 2P）
 
 ### 2. 外部変換器からのデータフォーマット
 シリアル経由で以下の **2バイトバイナリデータ** を受信し、マークIIIのジョイスティック状態にリアルタイムに反映します。データは「1P（ポートA）データ → 2P（ポートB）データ」の順で連続して送信されることを想定しています。
 
+
 | Bit | 機能 | 内容 |
 | :---: | :--- | :--- |
 | **b7** | ポート判別ID | `0` = Port A (1P) ／ `1` = Port B (2P) |
-| **b6** | ボタン3 | `0`: ON ／ `1`: OFF（押下時に本体PAUSE） |
+| **b6** | ボタン3 | `0`: ON ／ `1`: OFF (**Active Low**) |
 | **b5** | ボタン2 | `0`: ON ／ `1`: OFF |
 | **b4** | ボタン1 | `0`: ON ／ `1`: OFF |
 | **b3** | 右 (Right) | `0`: ON ／ `1`: OFF |
@@ -146,147 +235,3 @@ SRAM（バックアップ機能）に対応したタイトルは、その内容�
 ## 免責事項
 
 本ソフトウェアの使用によって生じたいかなる損害（直接的・間接的を問わず）についても、Fabrizio Di Vittorio氏、Marat Fayzullin氏、David Latham氏、Mitsutaka Okazaki氏、および開発者本人は一切の責任を負いません。すべて利用者の自己責任において使用してください。
-
----
----
-
-<a id="english"></a>
-# English
-
-This is a Sega Mark III (Master System) emulator using ESP32 and the **FabGL** library (currently under development). It supports VGA output, PS/2 keyboard, and external controllers via serial connection.
-
-### 📺 Demonstration Video
-**A demonstration video showcasing the emulator in action is now available.**
-[Watch the video on YouTube](https://www.youtube.com/watch?v=4cUE6SEUGLs)
-
-## 📝 Overview
-
-The objective of this project is to build a "comfortable Sega Mark III environment" within the resource constraints of the ESP32.
-- **Target Frame Rate**: Approx. 30 FPS
-- **Notes on Sound**: 
-  - Due to the performance constraints of the ESP32, the audio reproduction quality may be low. Please understand this before use.
-
-> ⚠️ **Notice Regarding Development and Licensing**
->
-> Since the majority of the main source code is built and modified based on AI-generated code, the developer does not fully grasp all the internal logic. Therefore, please note that we cannot answer detailed questions regarding the source code specifications or internal logic.
-> Please refer to the header comments at the beginning of the source code for specific license terms and conditions, and agree to them before use.
-
----
-
-## 🤝 Credits and Acknowledgments
-
-We would like to express our deepest gratitude to the following individuals for opening their wonderful development foundations to the open-source community.
-
-- **Graphics/Audio Engine**: Uses [FabGL](https://github.com) by Fabrizio Di Vittorio.
-- **Z80 CPU Core**: Modified based on the code by Marat Fayzullin.
-- **VDP Section**: Modified based on the TMS9918A core by David Latham, with adjustments by Marat Fayzullin.
-- **OPLL (YM2413) Sound Core**: Modified based on the code by Mitsutaka Okazaki.
-
-### 📜 About the Licenses of Each Core
-The licenses for each core within this software comply with the respective policies of FabGL, Marat Fayzullin (**fMSX License**), and Mitsutaka Okazaki (**MIT License / Free License**).
-
----
-
-## 🛠️ Verified Environment & Build Settings
-
-### Development Environment
-- **Board Manager**: ESP32 by Espressif Systems (**v2.0.5 Recommended**)
-- **Library Used**: FabGL v1.0.9
-
-### Arduino IDE Recommended Settings
-- **Development Board**: `ESP32 Dev Module`
-- **PSRAM**: `"Enabled"` (**Required**)
-- **Partition Scheme**: `"Default 4MB with SPIFFS"` or equivalent
-
----
-
-## 📂 SD Card Structure and Setup
-
-Please place the following folders and files in the root directory of your MicroSD card.
-The `SAVE` folder must be created manually before launching the emulator.
-
-```text
-/ (SD Root)
-├── /ROM                 : Stores game ROM files, etc.
-│   └── /SAVE            : Folder for storing state save data
-│       ├── ROM_filename0.sav  : Save data for Slot 0
-│       ├── ROM_filename1.sav  : Save data for Slot 1
-│       └── ROM_filename2.sav  : Save data for Slot 2
-```
-
----
-
-## 🕹️ Operation Guide
-
-### 1. Basic Controls
-
-| Input Device | Action | Emulator Function |
-| :--- | :--- | :--- |
-| **Keyboard** | **Cursor Keys (Up/Down/Left/Right)** | D-Pad (Up/Down/Left/Right) |
-| | **`[Z]`** | Button 1 |
-| | **`[X]`** | Button 2 |
-| **Controller** | **Button 3** | Console PAUSE (Same as `[F12]`) |
-| | **Simultaneous press of Buttons 1, 2, and 3** | Hardware Reset (Same as `[Shift] + [F12]`) |
-
----
-
-### 2. Extended Functions (Function Key Operations)
-
-#### 💡 System Operations
-* **`[F12]`** : Pause / Resume (Reproduces the **PAUSE button** on the Mark III console)
-* **`[Shift] + [F12]`** : Hardware Reset (Reboots the ESP32)
-
-#### 🎨 Screen & Sound Adjustments
-* **`[F7]` : Frame Skip Timing Adjustment**
-  This emulator achieves 30 FPS by using frame skipping. Therefore, games that alternate flashing or semi-transparency every 60 frames may result in characters either remaining solid or disappearing entirely.
-  This function changes the frame skip timing so that the flashing effect becomes visible.
-  The timing can be altered every `0, 1, 2, 4, 8, 16` frames. Please adjust as needed, though character movement or background scrolling may appear jittery.
-* **`[F8]` : Pseudo-SCC Sound Enable/Disable**
-  This allows titles that only support PSG to play sound using pre-configured SCC wavetable synthesizer tones.
-  *\*Please turn this OFF for software that natively supports FM sound.*
-* **`[Shift] + [F8]` : Remove Sprite Limit**
-  Removes the original hardware limitation of 8 sprites per horizontal line.
-
-#### 💾 SRAM Save & Load
-Titles that feature SRAM (backup memory) can save and restore their data to/from the SD card. Three slots are supported.
-*\*Data is not automatically loaded when the game starts.*
-
-* **Load State**: `[F9]` / `[F10]` / `[F11]` (Corresponds to Slots 2 to 0, respectively)
-* **Save State**: `[Shift] + [F9]` / `[Shift] + [F10]` / `[Shift] + [F11]` (Corresponds to Slots 2 to 0, respectively)
-
----
-
-## 🔌 Connecting a Joystick (External Controller)
-
-This project supports Atari-specification (D-Sub 9-pin) controller signals input via the ESP32's serial port (UART).
-
-> 💡 **Joystick Converter Compatibility**
-> 
-> The **Atari-to-Serial converter hardware and firmware** used for connecting external controllers can be shared directly from the one published in the MSX1 emulator section.
-
-### 1. Connection & Communication Specifications
-- **Communication Standard**: RS-232C Serial Communication
-- **Baud Rate**: 115200 bps
-- **Connection Port**: `IO39`
-- **Update Interval**: 33.34ms (Approx. 29.97Hz)
-- **Supported Hardware**: Mark III Joystick Ports 1 & 2 (1P / 2P)
-
-### 2. Data Format from External Converter
-The emulator receives the following **2-byte binary data** via serial communication and reflects the status of the Mark III joystick in real-time. It assumes data is transmitted continuously in the order of "1P (Port A) data → 2P (Port B) data".
-
-| Bit | Function | Description |
-| :---: | :--- | :--- |
-| **b7** | Port ID | `0` = Port A (1P) / `1` = Port B (2P) |
-| **b6** | Button 3 | `0`: ON / `1`: OFF (Triggers Console PAUSE when pressed) |
-| **b5** | Button 2 | `0`: ON / `1`: OFF |
-| **b4** | Button 1 | `0`: ON / `1`: OFF |
-| **b3** | Right | `0`: ON / `1`: OFF |
-| **b2** | Left | `0`: ON / `1`: OFF |
-| **b1** | Down | `0`: ON / `1`: OFF |
-| **b0** | Up | `0`: ON / `1`: OFF |
-
----
-
-## Disclaimer
-
-Fabrizio Di Vittorio, Marat Fayzullin, David Latham, Mitsutaka Okazaki, and the developer of this software assume no responsibility or liability for any damages (direct or indirect) arising from the use of this software. Please use it entirely at your own risk.

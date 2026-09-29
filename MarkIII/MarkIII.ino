@@ -76,15 +76,11 @@
 #include <SD.h>
 #include <fabgl.h>
 #include <vector>
-#include <WiFi.h>
 #include "soc/rtc_wdt.h"
 #include "esp_task_wdt.h"
 #include "Z80.h"
 #include "vdp.h"
 #include "emu2413.h"
-
-//#define USE_SERIAL_DEBUG
-//#define USE_SIGNAL_DEBUG
 
 // TTGO VGA32
 #define SD_SCLK 14
@@ -148,7 +144,7 @@ uint8_t scc_v[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_enable = 0x07;
 bool psg2scc = false;
 
-static const int BUFFER_SIZE = 512;
+static const int BUFFER_SIZE = 256;
 const uint8_t SCC_VOL_TABLE[16] = {
   0, 2, 4, 7, 10, 15, 21, 26, 33, 39, 47, 54, 62, 68, 73, 75
 };
@@ -183,7 +179,6 @@ bool ym2413_enabled = false;
 volatile int current_scanline = 0;
 String current_rom_path = "";
 bool spriteHorizontalUnlimited = false;
-uint8_t renderCounter = 0;
 
 uint8_t* main_ram = nullptr;
 uint8_t* game_rom_ptr = nullptr;
@@ -238,6 +233,10 @@ VideoMode determineVideoMode(const String& path, const uint8_t* rom_data = nullp
 
 VideoMode currentVideoMode = VideoMode::MODE4;
 VDP* smsVdp = nullptr;
+// MODE4ではVDPがFabGLのビューポートへ直接描く(drawBitmapを使わない)。
+// TMS9918Aモードは従来どおりラスタ＋drawBitmap。
+static uint8_t **mk3_rows = nullptr;
+static bool mk3_direct = false;
 
 static DRAM_ATTR uint8_t g_vdp_vram[16384];
 static DRAM_ATTR uint8_t g_vdp_cram[32];
@@ -273,6 +272,13 @@ private:
 
   static const int32_t OPLL_CLOCK = 3579545;
 
+  // 1次IIRローパスフィルタ（固定小数点、シフト演算のみ）
+  // y[n] = y[n-1] + (x[n]-y[n-1]) >> LP_SHIFT
+  // LP_SHIFTが大きいほどカットオフが低くなる(まろやかになるが遅れも増える)。
+  // 内部生成レートが16384Hzである点を踏まえ、まずは中庸な値から調整する。
+  static const int LP_SHIFT = 2;
+  int32_t lpState = 0;
+
   struct FMCommand {
     uint8_t adr;
     uint8_t val;
@@ -291,7 +297,13 @@ public:
     if (opll) OPLL_delete(opll);
   }
 
+  // FMユニットに一度でも書き込まれたか。未使用のままのゲームでOPLL合成を
+  // 丸ごと省くための判定に使う（下の touched() 参照）。
+  volatile bool touched_ = false;
+  bool touched() const { return touched_; }
+
   void writePort(uint8_t isDataPort, uint8_t val) {
+    touched_ = true;
     int nextHead = (cmdHead + 1) % CMD_QUEUE_SIZE;
     if (nextHead != cmdTail) {
       cmdQueue[cmdHead] = { isDataPort, val };
@@ -310,7 +322,9 @@ public:
 
     int nextHead = (head + 1) % BUFFER_SIZE;
     while (nextHead != tail) {
-      sampleBuffer[head] = (int16_t)(OPLL_calc(opll) >> 4);
+      int32_t raw = OPLL_calc(opll) >> 4;
+      lpState += (raw - lpState) >> LP_SHIFT;
+      sampleBuffer[head] = (int16_t)lpState;
       head = nextHead;
       nextHead = (head + 1) % BUFFER_SIZE;
     }
@@ -327,6 +341,7 @@ public:
 
   void resetOPLL() {
     if (opll) OPLL_reset(opll);
+    touched_ = false;   // リセット後は再び「未使用」に戻す
   }
 
   void getRegs(uint8_t* dest) {
@@ -346,6 +361,7 @@ public:
       OPLL_writeIO(opll, 1, src[i]);
     }
 
+    touched_ = true;    // ステート復元後はFMが鳴っている可能性がある
     clearBuffer();
   }
 
@@ -363,6 +379,7 @@ public:
     opll->conv = keepConv;
     for (int i = 0; i < 18; i++)
       opll->slot[i].patch = &opll->patch[patch_idx[i] < 38 ? patch_idx[i] : 0];
+    touched_ = true;    // ステート復元後はFMが鳴っている可能性がある
     clearBuffer();
   }
 
@@ -372,6 +389,7 @@ public:
     head = 0;
     tail = 0;
     lastSample = 0;
+    lpState = 0;
     memset(sampleBuffer, 0, sizeof(sampleBuffer));
   }
 };
@@ -481,6 +499,13 @@ private:
   volatile int head = 0;
   volatile int tail = 0;
 
+  // 1次IIRローパスフィルタ（固定小数点、シフト演算のみ）。
+  // 移動平均(tick積分)はくし形フィルタになりヌル点(特定音程が無音化)が
+  // 出るため不採用。1次IIRは単調減衰でヌル点を持たず、矩形波の
+  // 硬いエッジだけを丸められる。
+  static const int LP_SHIFT = 2;
+  int32_t lpState = 0;
+
 public:
   void writePort(uint8_t val) {
     if (val & 0x80) {
@@ -547,6 +572,7 @@ public:
     head = 0;
     tail = 0;
     lastSample = 0;
+    lpState = 0;
     memset(sampleBuffer, 0, sizeof(sampleBuffer));
   }
 
@@ -603,7 +629,9 @@ private:
     if (toneOut[2]) mixedSample += volTable[curVol[2]];
     if (noiseOut) mixedSample += volTable[curVol[3]];
 
-    return (int16_t)(mixedSample - 128);
+    int32_t raw = mixedSample - 128;
+    lpState += (raw - lpState) >> LP_SHIFT;
+    return (int16_t)lpState;
   }
 
   int getSample() override {
@@ -959,14 +987,12 @@ void loadStateFromSD() {
 }
 
 uint8_t kbdJoyState = 0x3F;
-char msgBuf[32];
 void updateKeyboard() {
   static bool isBreak = false;
   static bool isE0 = false;
   static bool isShift = false;
   static bool f5_held = false;
   static bool f6_held = false;
-  static bool f7_held = false;
   static bool f8_held = false;
   static bool f9_held = false;
   static bool f10_held = false;
@@ -1012,26 +1038,6 @@ void updateKeyboard() {
           loadStateFromPSRAM();
         }
       } else if (isBreak) f6_held = false;
-    } else if (sc == 0x83) {  // F7
-      if (!isBreak && !f7_held) {
-        f7_held = true;
-        if (!isShift) {
-          if (renderCounter == 0) {
-            renderCounter = 1;
-          } else {
-            renderCounter <<= 1;
-            if (renderCounter > 16) renderCounter = 0;
-          }
-          sprintf(msgBuf, "DISPLAY TIMING %d", renderCounter);
-          flashStatus(msgBuf, 1000);
-        } else {
-          if (smsVdp) {
-            sprintf(msgBuf, "R0=%02X R1=%02X R8=%02X R9=%02X",
-                    smsVdp->reg_[0], smsVdp->reg_[1], smsVdp->reg_[8], smsVdp->reg_[9]);
-            flashStatus(msgBuf, 3000);
-          }
-        }
-      } else if (isBreak) f7_held = false;
     } else if (sc == 0x0A) {  // F8
       if (!isBreak && !f8_held) {
         f8_held = true;
@@ -1405,18 +1411,14 @@ void initMemorySMS() {
 
 #define CPU_CYCLE_NOWAIT 228
 #define CPU_CYCLE_4MHZ 255
+
+// Z80 + VDP を1フィールド(262ライン)ずつ回す。毎フィールド描画(60FPS)。
 void IRAM_ATTR cpuTask(void* pvParameters) {
-  const int64_t frameTimeUs = 16684 * 2;  // NTSC 59.94FPS
+  const int64_t frameTimeUs = 16684;  // NTSC 59.94FPS
   int64_t nextFrameTime = esp_timer_get_time();
-  static uint8_t renderTiming = 0;
-  bool renderFrame = false;
 
   while (1) {
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(14, HIGH);
-#endif
     nextFrameTime += frameTimeUs;
-    renderFrame = (renderTiming++ & renderCounter) == 0;
 
     for (int i = 0; i < 262; ++i) {
       current_scanline = i;
@@ -1425,28 +1427,20 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
 
       if (currentVideoMode == VideoMode::MODE4) {
         smsVdp->scanlineCheck(i);
+        if (i < 192) {
+          smsVdp->renderSingleLine(i);
+        }
       } else {
         if (i == 192) {
           smsVdp->status_ |= 0x80;
         }
       }
-      if (i < 192) {
-        if (currentVideoMode == VideoMode::MODE4) {
-          if (renderFrame) {
-            smsVdp->renderSingleLine(i);
-          }
-        }
-      }
 
       if (i == 192) {
         if (currentVideoMode == VideoMode::TMS9918A) {
-          if (renderFrame) {
-            smsVdp->tms9918a_rasterize();
-          }
+          smsVdp->tms9918a_rasterize();
         }
-        if (renderFrame) {
-          frameReady = true;
-        }
+        frameReady = true;
       }
 
       if ((currentVideoMode == VideoMode::MODE4 ? smsVdp->irqPending() : smsVdp->tms9918a_irq_pending())
@@ -1454,46 +1448,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
         IntZ80(&cpu, 0x38);
       }
     }
-    for (int i = 0; i < 262; ++i) {
-      current_scanline = i;
 
-      ExecZ80(&cpu, CPU_CYCLE_NOWAIT);
-
-      if (currentVideoMode == VideoMode::MODE4) {
-        smsVdp->scanlineCheck(i);
-      } else {
-        if (i == 192) {
-          smsVdp->status_ |= 0x80;
-        }
-      }
-
-      if (i < 192) {
-        if (currentVideoMode == VideoMode::MODE4) {
-          if (!renderFrame) {
-            smsVdp->renderSingleLine(i);
-          }
-        }
-      }
-
-      if (i == 192) {
-        if (currentVideoMode == VideoMode::TMS9918A) {
-          if (!renderFrame) {
-            smsVdp->tms9918a_rasterize();
-          }
-        }
-        if (!renderFrame) {
-          frameReady = true;
-        }
-      }
-
-      if ((currentVideoMode == VideoMode::MODE4 ? smsVdp->irqPending() : smsVdp->tms9918a_irq_pending())
-          && (cpu.IFF & IFF_1)) {
-        IntZ80(&cpu, 0x38);
-      }
-    }
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(14, LOW);
-#endif
     int64_t now = esp_timer_get_time();
     int64_t waitTime = nextFrameTime - now;
 
@@ -1508,31 +1463,9 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
   }
 }
 
-void printMemoryStats() {
-  size_t free_dram = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
-  size_t max_dram_block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
-  size_t free_iram = heap_caps_get_free_size(MALLOC_CAP_EXEC | MALLOC_CAP_INTERNAL);
-  size_t max_iram_block = heap_caps_get_largest_free_block(MALLOC_CAP_EXEC | MALLOC_CAP_INTERNAL);
-  size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-
-  Serial.println("\n=== [ESP32 Memory Status at the end of setup()] ===");
-  Serial.printf(" 内部高速RAM (DRAM) 空き容量 : %6d バイト (約 %5.1f KB)\n", free_dram, free_dram / 1024.0);
-  Serial.printf(" 内部高速RAM (DRAM) 最大連続 : %6d バイト (連続して確保可能な最大サイズ)\n", max_dram_block);
-  Serial.printf(" IRAM (Instruction) 空き容量 : %6d バイト (約 %5.1f KB)\n", free_iram, free_iram / 1024.0);
-  Serial.printf(" IRAM (Instruction) 最大連続 : %6d バイト\n", max_iram_block);
-
-  if (free_psram > 0) {
-    Serial.printf(" 外部 PSRAM         空き容量 : %6d バイト (約 %5.1f KB)\n", free_psram, free_psram / 1024.0);
-  } else {
-    Serial.println(" 外部 PSRAM         空き容量 : 0 バイト (未搭載、または無効設定)");
-  }
-  Serial.println("===================================================\n");
-}
-
 void setup() {
   Serial.begin(115200);
   Serial1.begin(115200, SERIAL_8N1, 39, -1);
-  WiFi.mode(WIFI_OFF);
   setCpuFrequencyMhz(240);
 
   disableCore0WDT();
@@ -1656,26 +1589,40 @@ void setup() {
     }
   }
 
+  // ---- MODE4: ビューポート直描きの準備 ----
+  // メニューで積まれたプリミティブ(画面クリア等)を先に吐き切ってから、
+  // 以降のゲーム画面(0〜191行)はcanvasを使わず直接書く。
+  // flashStatus() は192行目以降にしか描かないので競合しない。
+  if (smsVdp && currentVideoMode == VideoMode::MODE4) {
+    DisplayController.processPrimitives();
+    mk3_rows = (uint8_t**)heap_caps_malloc(sizeof(uint8_t*) * SCREEN_H,
+                                           MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    bool ok = (mk3_rows != nullptr);
+    for (int y = 0; ok && y < SCREEN_H; y++) {
+      uint8_t *row = DisplayController.getScanline(y);
+      // 256ドットを320幅の中央(x=32)へ。32は4の倍数なので行が4バイト境界なら整列は保たれる。
+      if (!row || ((uintptr_t)row & 3)) {
+        Serial.printf("VIEWPORT row %d is NULL or unaligned (%p) -> drawBitmap path\n", y, row);
+        ok = false;
+        break;
+      }
+      mk3_rows[y] = row + 32;
+    }
+    if (ok) {
+      uint8_t sync = DisplayController.createRawPixel(fabgl::RGB222(0, 0, 0));
+      smsVdp->setDirectOutput(mk3_rows, sync);
+      mk3_direct = true;
+    }
+  }
+
   memset(&cpu, 0, sizeof(Z80));
   ResetZ80(&cpu);
   cpu.IPeriod = 224;
   cpu.SPtr.W = 0xDFFF;
 
-  printMemoryStats();
-
-#ifndef USE_SERIAL_DEBUG
   Serial.println("Sega Mark III / SMS Booting...");
   Serial.end();
-#else
-  Serial.println("Sega Mark III / SMS Booting with Debug Serial...");
-#endif
 
-#ifdef USE_SIGNAL_DEBUG
-  SPI.end();
-  SD.end();
-  pinMode(14, OUTPUT);
-  pinMode(2, OUTPUT);
-#endif
   update_memory_map();
   xTaskCreatePinnedToCore(cpuTask, "cpuTask", 8192, NULL, 24, NULL, 0);
 }
@@ -1697,25 +1644,42 @@ void updateAllSound() {
         scc_ch[i]->fillBuffer();  // 明示的に無音でバッファを埋める
       }
     }
-    fmGen->fillBuffer();
+    // 【最適化】OPLLの合成は 1サンプルあたり約12us、16384Hzで
+    // コア1の約20%を占める。起動直後は psg2scc=false / ym2413_enabled=false
+    // なのでこの分岐に入り、FMを一切使わないゲーム(大半)でも無音のOPLLを
+    // 延々と合成し続けていた。実際にFMへ書き込みがあったときだけ回す。
+    //   ・0xF0/0xF1 への書き込み → writePort() が touched_ を立てる
+    //   ・0xF2 bit0 → ym2413_enabled
+    // どちらかが立てば以降は常に合成するので、コマンドを取りこぼさない
+    // (未使用時はコマンドキューも空なので溜まらない)。
+    // 合成を止めている間 getSample() は lastSample(初期値0)を返すため無音。
+    if (ym2413_enabled || fmGen->touched()) {
+      fmGen->fillBuffer();
+    }
   }
 }
 
 void loop() {
   updateAllSound();
+
   if (frameReady) {
     frameReady = false;
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(2, HIGH);
-#endif
-    smsVdp->flip_buffer();
-    smsBitmap->data = smsVdp->visible_raster;
-    canvas->drawBitmap(32, 0, smsBitmap);
-    DisplayController.processPrimitives();
+    if (mk3_direct) {
+      // 画面はコア0(renderSingleLine)がビューポートへ書き込み済み。
+      // ステータス表示などのcanvasプリミティブだけ処理する。
+      DisplayController.processPrimitives();
+    } else {
+      smsVdp->flip_buffer();
+      smsBitmap->data = smsVdp->visible_raster;
+      canvas->drawBitmap(32, 0, smsBitmap);
+      DisplayController.processPrimitives();
+    }
     updateController();
     updateKeyboard();
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(2, LOW);
-#endif
+  } else {
+    // 何もせず即座に再ループするとコア1が常時100%稼働し、フラッシュ命令フェッチと
+    // PSRAMアクセスでコア0(cpuTask)と取り合う。リングは BUFFER_SIZE=512 サンプル
+    // / 16384Hz = 約31msぶんあるので、1tick(1ms)眠ってもアンダーランしない。
+    vTaskDelay(1);
   }
 }
