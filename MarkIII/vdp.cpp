@@ -72,6 +72,7 @@ void VDP::reset() {
 	vcmd_ = false;
 	rbuf_ = 0;
 	status_ = 0;
+	vscroll_ = 0;
 	linecnt_ = 0xFF;
 	vint_pending_ = false;
 	hint_pending_ = false;
@@ -189,10 +190,8 @@ int IRAM_ATTR VDP::renderLineScratch(int y) {
 	uint8_t *px = s_bgpx + fine;
 	renderSprites(y, px, s_bgin + fine);
 
-	// R0 bit5: 左端8ドットを隠す。実機はバックドロップ色(スプライト側パレットの
-	// R7下位4bit番目)で塗る。画面OFF時の塗りつぶしと同じ色。
 	if (reg_[0] & 0x20) {
-		memset(px, cramRGB[16 + (reg_[7] & 0x0F)], 8);
+		memset(px, 0, 8);
 	}
 	return fine;
 }
@@ -217,8 +216,13 @@ int IRAM_ATTR VDP::renderBG(int y, uint8_t *px, uint8_t *bginfo) {
 	const uint8_t *vram_ptr = vram;
 	const uint32_t *F = s_nib_fwd;
 	const uint32_t *R = s_nib_rev;
-	int current_scy_base = reg_[9] % 224;
+	// 縦スクロールはフレームの頭で取り込んだ値(表示中に R#9 を書いても次のフレームから効く。実機と同じ)
+	int current_scy_base = vscroll_ % 224;
 	bool v_lock = (reg_[0] & 0x80);
+	// 右8列(画面の24〜31列)は縦スクロールしない(R#0 bit7)。作業域のタイル tc は、横スクロールの
+	// 端数(fine≠0)があると先頭に半端なタイルが1つ入るので、画面の24列目は tc=25 になる
+	// (以前は常に tc>=24 で、端数があると固定する範囲が1キャラ左にずれていた)
+	const int lock_tc = fine ? 25 : 24;
 	const bool small_nt = !(reg_[2] & 0x01);
 
 	uint32_t *opx = (uint32_t *)px;
@@ -226,7 +230,7 @@ int IRAM_ATTR VDP::renderBG(int y, uint8_t *px, uint8_t *bginfo) {
 
 	for (int tc = 0; tc <= 32; tc++, opx += 2, obi += 2) {
 		int col = (tcol0 + tc) & 31;
-		int current_scy = (v_lock && tc >= 24) ? 0 : current_scy_base;
+		int current_scy = (v_lock && tc >= lock_tc) ? 0 : current_scy_base;
 		int sum_y = y + current_scy;
 		int eff_y = (sum_y >= 224) ? sum_y - 224 : sum_y;
 		int row = eff_y >> 3;
@@ -313,8 +317,17 @@ void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
 	}
 
 	const uint8_t *sprite_cram = &cramRGB[16];
+	const uint32_t *F = s_nib_fwd;
 
-	for (int i = job_count - 1; i >= 0; i--) {
+	// 番号の小さいスプライトほど手前。手前から描き、もう不透明なドットを出した位置を
+	// 256ビットのマスク occ で持つ(MSX2版と同じ考え方)。
+	//  ・奥のスプライトは手前のスプライトが出したドットを上書きしない。手前のドットが BG の
+	//    優先表示で隠れていても奥は透けない(実機と同じ。以前は奥から重ね塗りしていたので透けた)
+	//  ・不透明なドット同士が重なったら衝突フラグ(ステータス bit5)を立てる(以前は立てていなかった)
+	uint32_t occ[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	bool coll = false;
+
+	for (int i = 0; i < job_count; i++) {
 		int sx = jobs_sx[i];
 		uint8_t tile = jobs_tile[i];
 		int sprite_y = jobs_sprite_y[i];
@@ -329,67 +342,25 @@ void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
 
 		uint16_t ta = (spb | (tile << 5) | (local_y << 2)) & 0x3FFF;
 
-		// 【最適化】スプライトのタイルデータも32ビット一括読み込み
+		// 4プレーンを BG と同じ表で合成: c0 = ドット0〜3、c1 = ドット4〜7 のカラー番号(各バイト0〜15、下位バイトが左)
 		uint32_t b32 = *(const uint32_t *)&vram_ptr[ta];
-		uint8_t b0 = b32 & 0xFF;
-		uint8_t b1 = (b32 >> 8) & 0xFF;
-		uint8_t b2 = (b32 >> 16) & 0xFF;
-		uint8_t b3 = (b32 >> 24) & 0xFF;
+		uint32_t c0 = F[(b32 >> 4) & 15] | (F[(b32 >> 12) & 15] << 1) | (F[(b32 >> 20) & 15] << 2) | (F[b32 >> 28] << 3);
+		uint32_t c1 = F[b32 & 15] | (F[(b32 >> 8) & 15] << 1) | (F[(b32 >> 16) & 15] << 2) | (F[(b32 >> 24) & 15] << 3);
+		if (!(c0 | c1)) continue;                       // このラインは全部透明
 
-		if (sx >= 0 && sx <= SCREEN_W - 8) {
-#define SPR_MID(pp) \
-	do { \
-		int screen_x = sx + pp; \
-		uint8_t idx = ((b0 >> 7) & 1) | (((b1 >> 7) & 1) << 1) | (((b2 >> 7) & 1) << 2) | (((b3 >> 7) & 1) << 3); \
-		b0 <<= 1; \
-		b1 <<= 1; \
-		b2 <<= 1; \
-		b3 <<= 1; \
-		if (idx != 0) { \
-			uint8_t bgi = bginfo[screen_x]; \
-			if (!((bgi & 0x10) && (bgi & 0x0F) != 0)) { \
-				px[screen_x] = sprite_cram[idx]; \
-			} \
-		} \
-	} while (0)
-			SPR_MID(0);
-			SPR_MID(1);
-			SPR_MID(2);
-			SPR_MID(3);
-			SPR_MID(4);
-			SPR_MID(5);
-			SPR_MID(6);
-			SPR_MID(7);
-#undef SPR_MID
-		} else {
-#define SPR_EDGE(pp) \
-	do { \
-		int screen_x = sx + pp; \
-		if (screen_x >= 0 && screen_x < SCREEN_W) { \
-			uint8_t idx = ((b0 >> 7) & 1) | (((b1 >> 7) & 1) << 1) | (((b2 >> 7) & 1) << 2) | (((b3 >> 7) & 1) << 3); \
-			if (idx != 0) { \
-				uint8_t bgi = bginfo[screen_x]; \
-				if (!((bgi & 0x10) && (bgi & 0x0F) != 0)) { \
-					px[screen_x] = sprite_cram[idx]; \
-				} \
-			} \
-		} \
-		b0 <<= 1; \
-		b1 <<= 1; \
-		b2 <<= 1; \
-		b3 <<= 1; \
-	} while (0)
-			SPR_EDGE(0);
-			SPR_EDGE(1);
-			SPR_EDGE(2);
-			SPR_EDGE(3);
-			SPR_EDGE(4);
-			SPR_EDGE(5);
-			SPR_EDGE(6);
-			SPR_EDGE(7);
-#undef SPR_EDGE
+		for (int k = 0; k < 8; k++) {
+			uint32_t idx = (k < 4 ? (c0 >> (8 * k)) : (c1 >> (8 * (k - 4)))) & 15;
+			int x = sx + k;
+			if (!idx || (unsigned)x >= SCREEN_W) continue;
+			uint32_t bit = 0x80000000u >> (x & 31);
+			uint32_t &w = occ[x >> 5];
+			if (w & bit) { coll = true; continue; }     // 手前のスプライトが出している
+			w |= bit;
+			uint8_t bgi = bginfo[x];
+			if (!((bgi & 0x10) && (bgi & 0x0F) != 0)) px[x] = sprite_cram[idx];
 		}
 	}
+	if (coll) status_ |= 0x20;
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +419,8 @@ void IRAM_ATTR VDP::renderSingleLine(int y) {
 }
 
 void IRAM_ATTR VDP::scanlineCheck(int y) {
+	// 縦スクロールは表示期間の外でだけ取り込む(表示中の書き込みは次のフレームから)
+	if (y >= 192) vscroll_ = reg_[9];
 
 	if (y <= 192) {
 		if (linecnt_ == 0) {
@@ -465,6 +438,8 @@ void IRAM_ATTR VDP::scanlineCheck(int y) {
 	}
 }
 
+void IRAM_ATTR VDP::transferFrameToDisplay() {
+}
 
 /*
  *	Draw a horizontal slice of a sprite into the render buffer. If it
@@ -567,30 +542,35 @@ IRAM_ATTR void VDP::tms9918a_render_slice(int y, uint8_t *sprat, uint16_t bits, 
 	}
 }
 
-IRAM_ATTR void VDP::tms9918a_render_sprite(int y, uint8_t *sprat, uint8_t *spdat) {
+// このラインのパターン(16ドット、上位ビットが左。8x8 は上位8ビットだけ)。
+// spdat はパターンの先頭(16x16 のときは番号の下位2ビットを落としてある)
+static inline __attribute__((always_inline)) uint16_t tmsSpriteBits(const uint8_t *reg, int y, const uint8_t *sprat, const uint8_t *spdat) {
 	int row = *sprat;
-	uint16_t bits;
-	unsigned int width = 8;
-	unsigned int mag = reg_[1] & 0x01;
-
 	if (row > 0xE0)
 		row -= 0x100;
 	row += 1;
 	row = y - row;
-	if (mag)
+	if (reg[1] & 0x01)
 		row >>= 1;
+	if ((reg[1] & 0x02) == 0)
+		return (uint16_t)(spdat[row] << 8);   // 以前は << 24 で16bitに入りきらず0になり、8x8 が出なかった
+	return (uint16_t)((spdat[row] << 8) | spdat[row + 16]);
+}
 
-	if ((reg_[1] & 0x02) == 0) {
-		spdat += row;
-		width = 8;
-		bits = *spdat << 24;
-	} else {
-		spdat += row;
-		bits = *spdat << 8;
-		bits |= spdat[16];
-		width = 16;
-	}
-	tms9918a_render_slice(y, sprat, bits, width);
+// 衝突判定用: 16ドットのパターン → 32ドットのマスク(bit31 が左端。拡大なら各ドットを2つに)
+static inline __attribute__((always_inline)) uint32_t tmsSpriteMask(uint16_t bits, int mag) {
+	uint32_t b = bits;
+	if (!mag) return b << 16;
+	b = (b | (b << 8)) & 0x00FF00FFu;
+	b = (b | (b << 4)) & 0x0F0F0F0Fu;
+	b = (b | (b << 2)) & 0x33333333u;
+	b = (b | (b << 1)) & 0x55555555u;
+	return b | (b << 1);
+}
+
+IRAM_ATTR void VDP::tms9918a_render_sprite(int y, uint8_t *sprat, uint8_t *spdat) {
+	unsigned int width = (reg_[1] & 0x02) ? 16 : 8;
+	tms9918a_render_slice(y, sprat, tmsSpriteBits(reg_, y, sprat, spdat), width);
 }
 
 void VDP::prepare_sprites() {
@@ -621,12 +601,32 @@ IRAM_ATTR void VDP::tms9918a_sprite_line(int y) {
 	uint8_t *sprat_base = vram + ((reg_[5] & 0x7F) << 7);
 	uint8_t *spdat = vram + ((reg_[6] & 0x07) << 11);
 	unsigned int spshft = 3;
+	uint8_t patMask = (reg_[1] & 0x02) ? 0xFC : 0xFF;   // 16x16 は番号の下位2ビットを使わない(実機と同じ)
 	int count = sprite_line_count[y];
 
 	if (limit_sprites && count > 4) {
-		uint8_t fifth_idx = sprite_line_list[y][4];
-		status_ |= 0x40 | (fifth_idx & 0x1F);
+		// 5枚目: 5S と番号は最初に起きたものを読まれるまで保つ(以前は OR で番号が混ざっていた)
+		if (!(status_ & 0x40))
+			status_ = (status_ & 0xA0) | 0x40 | (sprite_line_list[y][4] & 0x1F);
 		count = 4;
+	}
+
+	// 衝突(ステータス bit5): 表示するスプライトのうち2枚の「1」のドットが重なったら立てる。
+	// 色0(透明)のスプライトも数える(実機と同じ)。画面の外(x<0, x>255)のドットは数えない。
+	if (count > 1 && !(status_ & 0x20)) {
+		uint32_t occ[9] = { 0 };
+		int mag = reg_[1] & 0x01;
+		for (int n = 0; n < count; n++) {
+			const uint8_t *sprat = sprat_base + sprite_line_list[y][n] * 4;
+			uint32_t m = tmsSpriteMask(tmsSpriteBits(reg_, y, sprat, spdat + ((sprat[2] & patMask) << spshft)), mag);
+			int x = sprat[1] - ((sprat[3] & 0x80) ? 32 : 0);
+			if (x < 0) { m = (x <= -32) ? 0 : (m << -x); x = 0; }
+			else if (x > 224) m &= ~(0xFFFFFFFFu >> (256 - x));
+			uint32_t w = (uint32_t)x >> 5, s = (uint32_t)x & 31;
+			uint32_t p0 = m >> s, p1 = s ? m << (32 - s) : 0;
+			if ((p0 & occ[w]) | (p1 & occ[w + 1])) { status_ |= 0x20; break; }
+			occ[w] |= p0; occ[w + 1] |= p1;
+		}
 	}
 
 	for (int n = count - 1; n >= 0; n--) {
@@ -635,7 +635,7 @@ IRAM_ATTR void VDP::tms9918a_sprite_line(int y) {
 		uint8_t foreground = sprat[3] & 0x0F;
 		if (foreground == 0) continue;
 
-		tms9918a_render_sprite(y, sprat, spdat + (sprat[2] << spshft));
+		tms9918a_render_sprite(y, sprat, spdat + ((sprat[2] & patMask) << spshft));
 	}
 }
 
@@ -912,6 +912,7 @@ void VDP::loadState(const VDPState& s) {
 	rbuf_         = s.rbuf;
 	linecnt_      = s.linecnt;
 	status_       = s.status;
+	vscroll_      = reg_[9];
 	vint_pending_ = s.vint_pending;
 	hint_pending_ = s.hint_pending;
 	read_mode     = s.read_mode;

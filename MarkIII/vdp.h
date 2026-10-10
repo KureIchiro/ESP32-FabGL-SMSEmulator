@@ -44,6 +44,8 @@ public:
     // 描画開始位置(左端オフセット込み)で、4バイト境界であること。
     // syncBits は createRawPixel(黒) の値(上位2bitだけ使う)。
     void setDirectOutput(uint8_t **rows, uint8_t syncBits);
+    
+    void transferFrameToDisplay();
 
     // ── H-INT / V-INT ──
     bool     vint_pending_;
@@ -103,6 +105,7 @@ public:
     uint8_t  rbuf_;
     uint8_t  linecnt_;
     uint8_t  status_;
+    uint8_t  vscroll_;     // 表示中に使う縦スクロール値。R#9 は表示期間の外(192ライン目以降)でだけ取り込む
 
 private:
     void renderLine(int y, uint8_t* line_buf);

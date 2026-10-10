@@ -76,11 +76,18 @@
 #include <SD.h>
 #include <fabgl.h>
 #include <vector>
+//#include <WiFi.h>
 #include "soc/rtc_wdt.h"
 #include "esp_task_wdt.h"
 #include "Z80.h"
 #include "vdp.h"
 #include "emu2413.h"
+
+//#define USE_SERIAL_DEBUG
+//#define USE_SIGNAL_DEBUG
+
+// Output cpuTask/loop timing stats (min/max/avg per second) via Serial.
+//#define USE_SERIAL_DEBUG2
 
 // TTGO VGA32
 #define SD_SCLK 14
@@ -102,8 +109,7 @@ extern "C" {
 
   extern Z80 cpu;
 
-  byte RdZ80(zword Addr);
-  void WrZ80(zword Addr, byte Value);
+  void WrZ80Slow(zword Addr, byte Value);
   byte InZ80(zword Port);
   void OutZ80(zword Port, byte Value);
   void PatchZ80(Z80* R);
@@ -111,10 +117,8 @@ extern "C" {
 
 Z80 cpu;
 
-byte IRAM_ATTR RdZ80(zword Addr) {
-  return (byte)readByte(NULL, Addr);
-}
-void IRAM_ATTR WrZ80(zword Addr, byte Value) {
+// Z80.c は読み出しと RAM(C000h〜FFFBh)への書き込みを直接行い、それ以外の書き込みだけここを呼ぶ
+void IRAM_ATTR WrZ80Slow(zword Addr, byte Value) {
   writeByte(NULL, Addr, Value);
 }
 byte IRAM_ATTR InZ80(zword Port) {
@@ -144,25 +148,37 @@ uint8_t scc_v[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_enable = 0x07;
 bool psg2scc = false;
 
-static const int BUFFER_SIZE = 256;
+static const int BUFFER_SIZE = 512;
 const uint8_t SCC_VOL_TABLE[16] = {
   0, 2, 4, 7, 10, 15, 21, 26, 33, 39, 47, 54, 62, 68, 73, 75
 };
 
-uint8_t Warm_Body_PhaseShift[32] = {
-  0x80, 0x68, 0x50, 0x38, 0x20, 0x10, 0x08, 0x04, 0x02, 0x04, 0x08, 0x10, 0x20, 0x38, 0x50, 0x68,
-  0x80, 0x98, 0xB0, 0xC8, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC8, 0xB0, 0x98
+// リード(メロディ): ノコギリ波ベースで2〜4倍音をやや持ち上げたブラス寄りの音
+// 倍音比 1 : 0.77 : 0.56 : 0.40 : 0.25 : 0.16 ...
+uint8_t SCC_Ys2_Lead[32] = {
+  0x00, 0x02, 0x06, 0x0A, 0x0F, 0x13, 0x18, 0x1D, 0x23, 0x2A, 0x34, 0x41, 0x53, 0x6C, 0x7C, 0x5A,
+  0x00, 0xA6, 0x84, 0x94, 0xAD, 0xBF, 0xCC, 0xD6, 0xDD, 0xE3, 0xE8, 0xED, 0xF1, 0xF6, 0xFA, 0xFE
 };
-uint8_t SCC_Triangle_PhaseShift[32] = {
-  0x80, 0x70, 0x60, 0x50, 0x40, 0x30, 0x20, 0x10, 0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70,
-  0x80, 0x8F, 0x9F, 0xAF, 0xBF, 0xCF, 0xDF, 0xEF, 0xFF, 0xEF, 0xDF, 0xCF, 0xBF, 0xAF, 0x9F, 0x8F
+
+// バッキング(和音・アルペジオ): デューティ25%のパルス波。4倍音が無く、PSGの矩形波より少し太い
+// 倍音比 1 : 0.69 : 0.31 : 0 : 0.16 : 0.17 ...
+uint8_t SCC_Ys2_Back[32] = {
+  0x29, 0x6D, 0x7C, 0x79, 0x7B, 0x79, 0x7C, 0x6D, 0x29, 0xE5, 0xD5, 0xD8, 0xD7, 0xD8, 0xD7, 0xD7,
+  0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD8, 0xD7, 0xD8, 0xD5, 0xE5
+};
+
+// ベース: 基音を主体に2〜3倍音を少し足した丸い低音。スピーカーでも輪郭が出る
+// 倍音比 1 : 0.39 : 0.15 : 0.04
+uint8_t SCC_Ys2_Bass[32] = {
+  0x00, 0x0B, 0x15, 0x20, 0x2B, 0x36, 0x42, 0x4D, 0x59, 0x66, 0x72, 0x7B, 0x7C, 0x71, 0x58, 0x30,
+  0x00, 0xD0, 0xA8, 0x8F, 0x84, 0x85, 0x8E, 0x9A, 0xA7, 0xB3, 0xBE, 0xCA, 0xD5, 0xE0, 0xEB, 0xF5
 };
 
 void initSCCPresets() {
   for (int i = 0; i < 32; i++) {
-    scc_waveform[0][i] = (int8_t)Warm_Body_PhaseShift[i] - 128;
-    scc_waveform[1][i] = (int8_t)SCC_Triangle_PhaseShift[i] - 128;
-    scc_waveform[2][i] = (int8_t)SCC_Triangle_PhaseShift[i] - 128;
+    scc_waveform[0][i] = (int8_t)SCC_Ys2_Lead[i] - 128;
+    scc_waveform[1][i] = (int8_t)SCC_Ys2_Back[i] - 128;
+    scc_waveform[2][i] = (int8_t)SCC_Ys2_Bass[i] - 128;
   }
 }
 
@@ -179,8 +195,10 @@ bool ym2413_enabled = false;
 volatile int current_scanline = 0;
 String current_rom_path = "";
 bool spriteHorizontalUnlimited = false;
+uint8_t renderCounter = 0;
 
-uint8_t* main_ram = nullptr;
+// main_ram と mem_read_map は Z80.c が直接引く(RAM への書き込みと読み出しは関数を呼ばない)
+extern "C" { uint8_t* main_ram = nullptr; }
 uint8_t* game_rom_ptr = nullptr;
 uint8_t* bank_ptrs[3];
 uint32_t rom_size = 0;
@@ -192,7 +210,7 @@ enum SmsMapperType { SMS_MAPPER_SEGA,
 SmsMapperType smsMapper = SMS_MAPPER_SEGA;
 uint32_t bank_mask = 0;
 bool sega_mapper_locked = false;
-uint8_t* mem_read_map[64];
+extern "C" { uint8_t* mem_read_map[64]; }
 std::vector<String> cachedRomFiles;
 String cachedDir = "";
 
@@ -462,16 +480,7 @@ void IRAM_ATTR updateSCCSound() {
   for (int i = 0; i < 3; i++) {
     auto* ch = scc_ch[i];
     if ((scc_enable & (1 << i)) && scc_f[i] > 0) {
-      int detuned_f = scc_f[i];
-      if (i == 0) {
-        detuned_f += 1;
-      } else if (i == 1) {
-        if (detuned_f > 1) detuned_f -= 1;
-      } else {
-        detuned_f += 2;
-      }
-
-      ch->updateParams((int8_t*)scc_waveform[i], detuned_f, SCC_VOL_TABLE[scc_v[i]]);
+      ch->updateParams((int8_t*)scc_waveform[i], scc_f[i], SCC_VOL_TABLE[scc_v[i]]);
     } else {
       ch->updateParams((int8_t*)scc_waveform[0], 0, 0);
     }
@@ -624,9 +633,11 @@ private:
     }
 
     int32_t mixedSample = 0;
-    if (toneOut[0]) mixedSample += volTable[curVol[0]];
-    if (toneOut[1]) mixedSample += volTable[curVol[1]];
-    if (toneOut[2]) mixedSample += volTable[curVol[2]];
+    if (!psg2scc) {
+      if (toneOut[0]) mixedSample += volTable[curVol[0]];
+      if (toneOut[1]) mixedSample += volTable[curVol[1]];
+      if (toneOut[2]) mixedSample += volTable[curVol[2]];
+    }
     if (noiseOut) mixedSample += volTable[curVol[3]];
 
     int32_t raw = mixedSample - 128;
@@ -987,12 +998,14 @@ void loadStateFromSD() {
 }
 
 uint8_t kbdJoyState = 0x3F;
+char msgBuf[32];
 void updateKeyboard() {
   static bool isBreak = false;
   static bool isE0 = false;
   static bool isShift = false;
   static bool f5_held = false;
   static bool f6_held = false;
+  static bool f7_held = false;
   static bool f8_held = false;
   static bool f9_held = false;
   static bool f10_held = false;
@@ -1038,6 +1051,26 @@ void updateKeyboard() {
           loadStateFromPSRAM();
         }
       } else if (isBreak) f6_held = false;
+    } else if (sc == 0x83) {  // F7
+      if (!isBreak && !f7_held) {
+        f7_held = true;
+        if (!isShift) {
+          if (renderCounter == 0) {
+            renderCounter = 1;
+          } else {
+            renderCounter <<= 1;
+            if (renderCounter > 16) renderCounter = 0;
+          }
+          sprintf(msgBuf, "DISPLAY TIMING %d", renderCounter);
+          flashStatus(msgBuf, 1000);
+        } else {
+          if (smsVdp) {
+            sprintf(msgBuf, "R0=%02X R1=%02X R8=%02X R9=%02X",
+                    smsVdp->reg_[0], smsVdp->reg_[1], smsVdp->reg_[8], smsVdp->reg_[9]);
+            flashStatus(msgBuf, 3000);
+          }
+        }
+      } else if (isBreak) f7_held = false;
     } else if (sc == 0x0A) {  // F8
       if (!isBreak && !f8_held) {
         f8_held = true;
@@ -1411,14 +1444,56 @@ void initMemorySMS() {
 
 #define CPU_CYCLE_NOWAIT 228
 #define CPU_CYCLE_4MHZ 255
+#ifdef USE_SERIAL_DEBUG2
+// Plain variables (no custom struct type) so the Arduino-IDE auto-generated
+// function prototype -- which gets inserted near the top of the file,
+// before this point -- doesn't need a type it hasn't seen yet.
+int64_t cpuStatMinUs = INT64_MAX, cpuStatMaxUs = 0, cpuStatSumUs = 0, cpuStatLastPrintUs = 0;
+uint32_t cpuStatCount = 0;
+int64_t loopStatMinUs = INT64_MAX, loopStatMaxUs = 0, loopStatSumUs = 0, loopStatLastPrintUs = 0;
+uint32_t loopStatCount = 0;
 
-// Z80 + VDP を1フィールド(262ライン)ずつ回す。毎フィールド描画(60FPS)。
+// Accumulates one elapsed-time sample and, once per second, prints
+// "<label> Lmin Mmax Aavg" (values in microseconds) then resets.
+void updateLoadStats(int64_t* minUs, int64_t* maxUs, int64_t* sumUs, uint32_t* count, int64_t* lastPrintUs, const char* label, int64_t elapsedUs) {
+  if (elapsedUs < *minUs) *minUs = elapsedUs;
+  if (elapsedUs > *maxUs) *maxUs = elapsedUs;
+  *sumUs += elapsedUs;
+  (*count)++;
+
+  int64_t now = esp_timer_get_time();
+  if (now - *lastPrintUs >= 1000000) {
+    int64_t avgUs = (*count > 0) ? (*sumUs / *count) : 0;
+    Serial.printf("%s L%lld M%lld A%lld\n", label, (long long)*minUs, (long long)*maxUs, (long long)avgUs);
+
+    *minUs = INT64_MAX;
+    *maxUs = 0;
+    *sumUs = 0;
+    *count = 0;
+    *lastPrintUs = now;
+  }
+}
+#endif
+
 void IRAM_ATTR cpuTask(void* pvParameters) {
-  const int64_t frameTimeUs = 16684;  // NTSC 59.94FPS
+  const int64_t frameTimeUs = 16684;// * 2;  // NTSC 59.94FPS
   int64_t nextFrameTime = esp_timer_get_time();
+  static uint8_t renderTiming = 0;
+  bool renderFrame = false;
+
+#ifdef USE_SERIAL_DEBUG2
+  Serial.printf("cpuTask started. (core=%d)\n", xPortGetCoreID());
+#endif
 
   while (1) {
+#if defined(USE_SIGNAL_DEBUG) || defined(USE_SERIAL_DEBUG2)
+    int64_t cpuProfStart = esp_timer_get_time();
+#endif
+#ifdef USE_SIGNAL_DEBUG
+    digitalWrite(14, HIGH);
+#endif
     nextFrameTime += frameTimeUs;
+    renderFrame = 1;//(renderTiming++ & renderCounter) == 0;
 
     for (int i = 0; i < 262; ++i) {
       current_scanline = i;
@@ -1427,20 +1502,28 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
 
       if (currentVideoMode == VideoMode::MODE4) {
         smsVdp->scanlineCheck(i);
-        if (i < 192) {
-          smsVdp->renderSingleLine(i);
-        }
       } else {
         if (i == 192) {
           smsVdp->status_ |= 0x80;
         }
       }
+      if (i < 192) {
+        if (currentVideoMode == VideoMode::MODE4) {
+          if (renderFrame) {
+            smsVdp->renderSingleLine(i);
+          }
+        }
+      }
 
       if (i == 192) {
         if (currentVideoMode == VideoMode::TMS9918A) {
-          smsVdp->tms9918a_rasterize();
+          if (renderFrame) {
+            smsVdp->tms9918a_rasterize();
+          }
         }
-        frameReady = true;
+        if (renderFrame) {
+          frameReady = true;
+        }
       }
 
       if ((currentVideoMode == VideoMode::MODE4 ? smsVdp->irqPending() : smsVdp->tms9918a_irq_pending())
@@ -1448,7 +1531,49 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
         IntZ80(&cpu, 0x38);
       }
     }
+    // for (int i = 0; i < 262; ++i) {
+    //   current_scanline = i;
 
+    //   ExecZ80(&cpu, CPU_CYCLE_NOWAIT);
+
+    //   if (currentVideoMode == VideoMode::MODE4) {
+    //     smsVdp->scanlineCheck(i);
+    //   } else {
+    //     if (i == 192) {
+    //       smsVdp->status_ |= 0x80;
+    //     }
+    //   }
+
+    //   if (i < 192) {
+    //     if (currentVideoMode == VideoMode::MODE4) {
+    //       if (!renderFrame) {
+    //         smsVdp->renderSingleLine(i);
+    //       }
+    //     }
+    //   }
+
+    //   if (i == 192) {
+    //     if (currentVideoMode == VideoMode::TMS9918A) {
+    //       if (!renderFrame) {
+    //         smsVdp->tms9918a_rasterize();
+    //       }
+    //     }
+    //     if (!renderFrame) {
+    //       frameReady = true;
+    //     }
+    //   }
+
+    //   if ((currentVideoMode == VideoMode::MODE4 ? smsVdp->irqPending() : smsVdp->tms9918a_irq_pending())
+    //       && (cpu.IFF & IFF_1)) {
+    //     IntZ80(&cpu, 0x38);
+    //   }
+    // }
+#ifdef USE_SIGNAL_DEBUG
+    digitalWrite(14, LOW);
+#endif
+#ifdef USE_SERIAL_DEBUG2
+    updateLoadStats(&cpuStatMinUs, &cpuStatMaxUs, &cpuStatSumUs, &cpuStatCount, &cpuStatLastPrintUs, "CPU", esp_timer_get_time() - cpuProfStart);
+#endif
     int64_t now = esp_timer_get_time();
     int64_t waitTime = nextFrameTime - now;
 
@@ -1463,9 +1588,31 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
   }
 }
 
+void printMemoryStats() {
+  size_t free_dram = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+  size_t max_dram_block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+  size_t free_iram = heap_caps_get_free_size(MALLOC_CAP_EXEC | MALLOC_CAP_INTERNAL);
+  size_t max_iram_block = heap_caps_get_largest_free_block(MALLOC_CAP_EXEC | MALLOC_CAP_INTERNAL);
+  size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+  Serial.println("\n=== [ESP32 Memory Status at the end of setup()] ===");
+  Serial.printf(" 内部高速RAM (DRAM) 空き容量 : %6d バイト (約 %5.1f KB)\n", free_dram, free_dram / 1024.0);
+  Serial.printf(" 内部高速RAM (DRAM) 最大連続 : %6d バイト (連続して確保可能な最大サイズ)\n", max_dram_block);
+  Serial.printf(" IRAM (Instruction) 空き容量 : %6d バイト (約 %5.1f KB)\n", free_iram, free_iram / 1024.0);
+  Serial.printf(" IRAM (Instruction) 最大連続 : %6d バイト\n", max_iram_block);
+
+  if (free_psram > 0) {
+    Serial.printf(" 外部 PSRAM         空き容量 : %6d バイト (約 %5.1f KB)\n", free_psram, free_psram / 1024.0);
+  } else {
+    Serial.println(" 外部 PSRAM         空き容量 : 0 バイト (未搭載、または無効設定)");
+  }
+  Serial.println("===================================================\n");
+}
+
 void setup() {
   Serial.begin(115200);
   Serial1.begin(115200, SERIAL_8N1, 39, -1);
+  //WiFi.mode(WIFI_OFF);
   setCpuFrequencyMhz(240);
 
   disableCore0WDT();
@@ -1612,6 +1759,10 @@ void setup() {
       uint8_t sync = DisplayController.createRawPixel(fabgl::RGB222(0, 0, 0));
       smsVdp->setDirectOutput(mk3_rows, sync);
       mk3_direct = true;
+#if defined(USE_SERIAL_DEBUG) || defined(USE_SERIAL_DEBUG2)
+      Serial.printf("DIRECT VIEWPORT: row0=%p row1=%p stride=%d rawBlack=%02X\n",
+                    mk3_rows[0], mk3_rows[1], (int)(mk3_rows[1] - mk3_rows[0]), sync);
+#endif
     }
   }
 
@@ -1620,9 +1771,21 @@ void setup() {
   cpu.IPeriod = 224;
   cpu.SPtr.W = 0xDFFF;
 
+  printMemoryStats();
+
+#if !defined(USE_SERIAL_DEBUG) && !defined(USE_SERIAL_DEBUG2)
   Serial.println("Sega Mark III / SMS Booting...");
   Serial.end();
+#else
+  Serial.println("Sega Mark III / SMS Booting with Debug Serial...");
+#endif
 
+#ifdef USE_SIGNAL_DEBUG
+  SPI.end();
+  SD.end();
+  pinMode(14, OUTPUT);
+  pinMode(2, OUTPUT);
+#endif
   update_memory_map();
   xTaskCreatePinnedToCore(cpuTask, "cpuTask", 8192, NULL, 24, NULL, 0);
 }
@@ -1659,11 +1822,44 @@ void updateAllSound() {
   }
 }
 
+#ifdef USE_SERIAL_DEBUG
+// ---------------------------------------------------------------------------
+// コア1の内訳計測
+//   GPIO2は「コア1が忙しい合計時間」しか見せないので、その中身を
+//   サウンド / 転送 / 入力 に分けて1秒ごとの累計(us)で出す。
+//   1,000,000us が1コア分なので、値をそのまま「%」として読める。
+//   ★60FPS化の判断に直結する点:
+//     blit はフレームごとなので 60FPS化で「倍」になる。
+//     snd はフレームレートと無関係なので変わらない。
+//     したがって blit が支配的ならコア1が60FPSの新たな律速になる。
+// ---------------------------------------------------------------------------
+static int64_t c1_snd = 0, c1_blit = 0, c1_inp = 0;
+static int64_t c1_winStart = 0;
+static int c1_iter = 0, c1_frames = 0;
+#endif
+
 void loop() {
+#ifdef USE_SERIAL_DEBUG
+  int64_t t0 = esp_timer_get_time();
+  if (c1_winStart == 0) c1_winStart = t0;
+#endif
+
   updateAllSound();
+
+#ifdef USE_SERIAL_DEBUG
+  int64_t t1 = esp_timer_get_time();
+  c1_snd += t1 - t0;
+  c1_iter++;
+#endif
 
   if (frameReady) {
     frameReady = false;
+#if defined(USE_SIGNAL_DEBUG) || defined(USE_SERIAL_DEBUG2)
+    int64_t loopProfStart = esp_timer_get_time();
+#endif
+#ifdef USE_SIGNAL_DEBUG
+    digitalWrite(2, HIGH);
+#endif
     if (mk3_direct) {
       // 画面はコア0(renderSingleLine)がビューポートへ書き込み済み。
       // ステータス表示などのcanvasプリミティブだけ処理する。
@@ -1674,12 +1870,46 @@ void loop() {
       canvas->drawBitmap(32, 0, smsBitmap);
       DisplayController.processPrimitives();
     }
+#ifdef USE_SERIAL_DEBUG
+    int64_t t2 = esp_timer_get_time();
+    c1_blit += t2 - t1;
+    c1_frames++;
+#endif
     updateController();
     updateKeyboard();
+#ifdef USE_SERIAL_DEBUG
+    c1_inp += esp_timer_get_time() - t2;
+#endif
+#ifdef USE_SIGNAL_DEBUG
+    digitalWrite(2, LOW);
+#endif
+#ifdef USE_SERIAL_DEBUG2
+    updateLoadStats(&loopStatMinUs, &loopStatMaxUs, &loopStatSumUs, &loopStatCount, &loopStatLastPrintUs, "LOOP", esp_timer_get_time() - loopProfStart);
+#endif
   } else {
-    // 何もせず即座に再ループするとコア1が常時100%稼働し、フラッシュ命令フェッチと
-    // PSRAMアクセスでコア0(cpuTask)と取り合う。リングは BUFFER_SIZE=512 サンプル
+    // 【最適化】30回に29回はここに来る。以前は何もせず即座に再ループしていたため
+    // コア1が常時100%稼働し、フラッシュ命令フェッチとPSRAMアクセスで
+    // コア0(cpuTask)のキャッシュを奪っていた。リングは BUFFER_SIZE=512 サンプル
     // / 16384Hz = 約31msぶんあるので、1tick(1ms)眠ってもアンダーランしない。
+    // 60FPSを達成している自作MSX実装も loop()末尾で delay(1) している。
     vTaskDelay(1);
   }
+
+#ifdef USE_SERIAL_DEBUG
+  // 1秒ごとに累計を吐く。1,000,000us = コア1まるごと1個ぶん。
+  {
+    int64_t now = esp_timer_get_time();
+    if (now - c1_winStart >= 1000000) {
+      int64_t busy = c1_snd + c1_blit + c1_inp;
+      Serial.printf("C1/s: snd=%6lld blit=%6lld inp=%5lld busy=%6lld (%2lld%%) frames=%2d iter=%4d | blit/frame=%5lld\n",
+                    (long long)c1_snd, (long long)c1_blit, (long long)c1_inp,
+                    (long long)busy, (long long)(busy / 10000),
+                    c1_frames, c1_iter,
+                    (long long)(c1_frames ? c1_blit / c1_frames : 0));
+      c1_snd = c1_blit = c1_inp = 0;
+      c1_iter = c1_frames = 0;
+      c1_winStart = now;
+    }
+  }
+#endif
 }
