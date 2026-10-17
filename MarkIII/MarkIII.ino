@@ -132,6 +132,11 @@ void PatchZ80(Z80* R) {}
 void listROMs();
 void detectMapper(uint32_t size);
 void updateKeyboard();
+// PAUSE ボタン(F12 / ジョイスティックのボタン3)の NMI の要求。キー入力はコア1(loop)で読むが、
+// NMI はコア0(cpuTask)が ExecZ80 の合間に入れる。【不具合修正】以前はコア1から IntZ80 を直接
+// 呼んでいて、実行中の Z80(PC などをレジスタの写しで持っている)と書き換えがぶつかり、
+// スタックがずれて画面が崩れた
+static volatile bool nmiRequest = false;
 void updateFabGLSound();
 
 fabgl::VGAController DisplayController;
@@ -203,6 +208,7 @@ uint8_t* game_rom_ptr = nullptr;
 uint8_t* bank_ptrs[3];
 uint32_t rom_size = 0;
 uint8_t cart_ram[32 * 1024];
+volatile uint32_t sramChanges = 0;   // ゲームが SRAM の値を書き換えた回数(自動保存の合図)
 bool sram_enabled = false;
 uint8_t sram_bank = 0;
 enum SmsMapperType { SMS_MAPPER_SEGA,
@@ -634,9 +640,9 @@ private:
 
     int32_t mixedSample = 0;
     if (!psg2scc) {
-      if (toneOut[0]) mixedSample += volTable[curVol[0]];
-      if (toneOut[1]) mixedSample += volTable[curVol[1]];
-      if (toneOut[2]) mixedSample += volTable[curVol[2]];
+    if (toneOut[0]) mixedSample += volTable[curVol[0]];
+    if (toneOut[1]) mixedSample += volTable[curVol[1]];
+    if (toneOut[2]) mixedSample += volTable[curVol[2]];
     }
     if (noiseOut) mixedSample += volTable[curVol[3]];
 
@@ -735,7 +741,8 @@ inline void IRAM_ATTR writeByte(void* context, uint16_t addr, uint8_t val) {
     }
   } else {
     if (addr >= 0x8000 && sram_enabled) {
-      cart_ram[(sram_bank * 0x4000) + (addr & 0x3FFF)] = val;
+      uint8_t &d = cart_ram[(sram_bank * 0x4000) + (addr & 0x3FFF)];
+      if (d != val) { d = val; sramChanges++; }
     } else if (!sega_mapper_locked && rom_size <= 0x80000) {
       bool changed = false;
       if (addr == 0x0000) {
@@ -761,24 +768,41 @@ void writeWord(void* ctx, int addr, int val) {
   writeByte(ctx, addr + 1, val >> 8);
 }
 
+// I/O ポートは A7・A6・A0 だけでデコードされる(Mark III / SMS / SG-1000 共通)。
+//   00h〜3Fh: 書き 偶数=メモリ制御(3Eh) 奇数=I/O制御(3Fh)
+//   40h〜7Fh: 読み 偶数=Vカウンタ 奇数=Hカウンタ / 書き PSG
+//   80h〜BFh: 偶数=VDPデータ 奇数=VDPコントロール
+//   C0h〜FFh: 読み 偶数=パッド1(DCh) 奇数=パッド2(DDh)  (F0h〜F2h は FM ユニット)
+// 以前は BEh/BFh・DCh/DDh・7Eh/7Fh などちょうどの番号しか見ていなかった。
+// ゴールデンアックス・ウォリアーは BDh で VDP のアドレスを設定してから敵のパターンを
+// 書き直すので、その設定が捨てられて敵がゴミになっていた。
 inline int IRAM_ATTR readIO(void* context, int port) {
   uint8_t p = (uint8_t)port;
 
-  if (likely((p & 0xFE) == 0xBE)) {
+  if (likely((p & 0xC0) == 0x80)) {
     if (likely(currentVideoMode == VideoMode::MODE4)) {
       return (p & 1) ? smsVdp->readControl() : smsVdp->readData();
     }
     return smsVdp->tms9918a_read(p & 0x01);
   }
 
-  if (p == 0xDC) {
+  if ((p & 0xC1) == 0x40) {
+    int ln = current_scanline;
+    return (uint8_t)(ln <= 0xDA ? ln : ln - 6);
+  }
+
+  if (p == 0xF2) {
+    return ym2413_enabled ? 0x01 : 0x00;
+  }
+
+  if ((p & 0xC1) == 0xC0) {
     uint8_t v = sms_joy_state_a & 0x3F;
     v |= (sms_joy_state_b & 0x01) << 6;
     v |= (sms_joy_state_b & 0x02) << 6;
     return v;
   }
 
-  if (p == 0xDD) {
+  if ((p & 0xC1) == 0xC1) {
     uint8_t v = ((sms_joy_state_b >> 2) & 0x0F) | 0x30;
     if (smsRegionExport) {
       v |= (sms_io_port_3F & 0x02) ? ((sms_io_port_3F & 0x20) ? 0x40 : 0x00) : 0x40;
@@ -789,23 +813,14 @@ inline int IRAM_ATTR readIO(void* context, int port) {
     return v;
   }
 
-  if (p == 0x7E) {
-    int ln = current_scanline;
-    return (uint8_t)(ln <= 0xDA ? ln : ln - 6);
-  }
-
-  if (p == 0xF2) {
-    return ym2413_enabled ? 0x01 : 0x00;
-  }
-
-  return 0xFF;
+  return 0xFF;   // Hカウンタ(40h〜7Fh の奇数)は未実装
 }
 
 inline void IRAM_ATTR writeIO(void* context, int port, int val) {
   uint8_t p = (uint8_t)port;
   uint8_t v = (uint8_t)val;
 
-  if (likely((p & 0xFE) == 0xBE)) {
+  if (likely((p & 0xC0) == 0x80)) {
     if (likely(currentVideoMode == VideoMode::MODE4)) {
       if (p & 1) smsVdp->writeControl(v);
       else smsVdp->writeData(v);
@@ -815,7 +830,7 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
     return;
   }
 
-  if (p == 0x7F) {
+  if ((p & 0xC0) == 0x40) {
     psgGen.writePort(v);
     return;
   }
@@ -835,11 +850,11 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
     return;
   }
 
-  if (p == 0x3E) {
+  if ((p & 0xC1) == 0x00) {
     sms_memory_control = v;
     return;
   }
-  if (p == 0x3F) {
+  if ((p & 0xC1) == 0x01) {
     sms_io_port_3F = v;
     return;
   }
@@ -880,40 +895,53 @@ String getSaveFilePath(int slotNumber) {
   return "/ROM/SAVE/" + fileName + slotSuffix + ".sav";
 }
 
-void saveSRAMtoFile(int slotNumber) {
-  String savePath = getSaveFilePath(slotNumber);
-
-  File file = SD.open(savePath, FILE_WRITE);
-  if (!file) {
-    flashStatus("SRAM Save Failed!", 2000);
-    return;
-  }
-
-  file.write(cart_ram, sizeof(cart_ram));
+// SRAM(カートリッジのバックアップ RAM)のファイル。スロット 0 は電池の代わり:
+// ゲームを始めるときに自動で読み、ゲームが SRAM を書き換えたら 2 秒後に自動で保存する。
+// スロット 1 / 2 は手動の控え(Shift+F10 / Shift+F9 で保存、F10 / F9 で読み込み)。
+bool writeSramFile(int slotNumber) {
+  if (!SD.exists("/ROM/SAVE")) SD.mkdir("/ROM/SAVE");
+  File file = SD.open(getSaveFilePath(slotNumber), FILE_WRITE);
+  if (!file) return false;
+  size_t n = file.write(cart_ram, sizeof(cart_ram));
   file.close();
+  return n == sizeof(cart_ram);
+}
 
-  flashStatus("SRAM Saved!", 1000);
+// 読めたら true。ファイルが無いときは今の SRAM をそのまま残す
+// (【不具合修正】以前は 0 で消していたので、遊んでいる途中のデータが消えてゲームが続けられなくなった)
+bool readSramFile(int slotNumber) {
+  String savePath = getSaveFilePath(slotNumber);
+  if (!SD.exists(savePath)) return false;
+  File file = SD.open(savePath, FILE_READ);
+  if (!file) return false;
+  file.read(cart_ram, sizeof(cart_ram));
+  file.close();
+  return true;
+}
+
+void saveSRAMtoFile(int slotNumber) {
+  flashStatus(writeSramFile(slotNumber) ? "SRAM Saved!" : "SRAM Save Failed!", 1000);
 }
 
 void loadSRAMfromFile(int slotNumber) {
   String savePath = getSaveFilePath(slotNumber);
-
   if (!SD.exists(savePath)) {
     flashStatus("No SRAM File Found", 1500);
-    memset(cart_ram, 0, sizeof(cart_ram));
     return;
   }
+  flashStatus(readSramFile(slotNumber) ? "SRAM Loaded!" : "SRAM Load Failed!", 1000);
+}
 
-  File file = SD.open(savePath, FILE_READ);
-  if (!file) {
-    flashStatus("SRAM Load Failed!", 2000);
-    return;
+// ゲームが SRAM を書き換え、そのあと 2 秒書き換えが無ければスロット 0 へ保存する(loop から毎フレーム)
+void autoSaveSram() {
+  static uint32_t seen = 0, changedAt = 0;
+  static bool pending = false;
+  uint32_t n = sramChanges;
+  if (n != seen) { seen = n; changedAt = millis(); pending = true; return; }
+  if (pending && (uint32_t)(millis() - changedAt) >= 2000) {
+    pending = false;
+    if (!writeSramFile(0)) flashStatus("SRAM Save Failed!", 1000);
   }
-
-  file.read(cart_ram, sizeof(cart_ram));
-  file.close();
-
-  flashStatus("SRAM Loaded!", 1000);
 }
 
 String getStateFilePath() {
@@ -1130,7 +1158,7 @@ void updateKeyboard() {
         if (isShift) {
           ESP.restart();
         } else {
-          IntZ80(&cpu, INT_NMI);
+          nmiRequest = true;                       // PAUSE: NMI はコア0(cpuTask)が入れる
         }
       } else if (isBreak) f12_held = false;
     }
@@ -1189,7 +1217,7 @@ void IRAM_ATTR updateController() {
       if (!(joy_bits & 0x40)) {
         if (!btn3_held_b) {
           btn3_held_b = true;
-          IntZ80(&cpu, INT_NMI);
+          nmiRequest = true;
         }
       } else {
         btn3_held_b = false;
@@ -1201,7 +1229,7 @@ void IRAM_ATTR updateController() {
       if (!(joy_bits & 0x40)) {
         if (!btn3_held_a) {
           btn3_held_a = true;
-          IntZ80(&cpu, INT_NMI);
+          nmiRequest = true;
         }
       } else {
         btn3_held_a = false;
@@ -1275,6 +1303,13 @@ void selectRomMenu() {
   }
 
   auto kbd = PS2Controller.keyboard();
+  // 色は全機種共通: フォルダ = 水色、ファイル = 白、選んでいる項目 = 黄
+  auto penFor = [&](int idx, bool sel) {
+    const String &s = romFiles[idx];
+    if (sel) canvas->setPenColor(RGB888(255, 255, 85));
+    else if (s == ".." || s.endsWith("/")) canvas->setPenColor(RGB888(85, 255, 255));
+    else canvas->setPenColor(RGB888(255, 255, 255));
+  };
   int cursor = 0;
   int prevCursor = 0;
   int topIndex = 0;
@@ -1282,33 +1317,35 @@ void selectRomMenu() {
   const int maxRows = 18;
   bool selected = false;
   bool needRedrawAll = true;
+  // 画面全体を消すのは最初とフォルダを移ったときだけ。スクロールは一覧の行だけ描き直す
+  // (全部消して描くとちらつく。カーソル移動は前と今の2行だけ)
+  bool needClear = true;
 
   while (!selected) {
     if (cursor < topIndex) topIndex = cursor;
     if (cursor >= topIndex + maxRows) topIndex = cursor - maxRows + 1;
-    
+
     if (topIndex != prevTopIndex) {
       needRedrawAll = true;
       prevTopIndex = topIndex;
     }
 
     if (needRedrawAll) {
-      canvas->setBrushColor(RGB888(0, 0, 85));
-      canvas->clear();
-      canvas->setPenColor(RGB888(255, 255, 255));
-      canvas->drawText(40, 5, "--- SEGA MARK3 ROM SELECTOR ---");
+      if (needClear) {
+        canvas->setBrushColor(RGB888(0, 0, 85));
+        canvas->clear();
+        canvas->setPenColor(RGB888(255, 255, 255));
+        canvas->drawText(40, 5, "--- SEGA MARK3 ROM SELECTOR ---");
+        needClear = false;
+      }
 
-      for (int i = 0; i < maxRows && (topIndex + i) < romFiles.size(); ++i) {
+      for (int i = 0; i < maxRows; ++i) {
         int idx = topIndex + i;
         int y = 25 + (i * 9);
-
-        if (idx == cursor) {
-          canvas->setBrushColor(RGB888(170, 0, 0));
-          canvas->setPenColor(RGB888(255, 255, 255));
-          canvas->fillRectangle(10, y, 310, y + 8);
-        } else {
-          canvas->setPenColor(RGB888(170, 170, 170));
-        }
+        canvas->setBrushColor(RGB888(0, 0, 85));
+        canvas->fillRectangle(10, y, 310, y + 8);
+        if (idx >= (int)romFiles.size()) continue;
+        penFor(idx, idx == cursor);
         canvas->drawText(20, y, romFiles[idx].c_str());
       }
       needRedrawAll = false;
@@ -1318,16 +1355,16 @@ void selectRomMenu() {
         int oldY = 25 + (oldLocalIdx * 9);
         canvas->setBrushColor(RGB888(0, 0, 85));
         canvas->fillRectangle(10, oldY, 310, oldY + 8);
-        canvas->setPenColor(RGB888(170, 170, 170));
+        penFor(prevCursor, false);
         canvas->drawText(20, oldY, romFiles[prevCursor].c_str());
       }
 
       int newLocalIdx = cursor - topIndex;
       if (newLocalIdx >= 0 && newLocalIdx < maxRows) {
         int newY = 25 + (newLocalIdx * 9);
-        canvas->setBrushColor(RGB888(170, 0, 0));
-        canvas->setPenColor(RGB888(255, 255, 255));
+        canvas->setBrushColor(RGB888(0, 0, 85));
         canvas->fillRectangle(10, newY, 310, newY + 8);
+        penFor(cursor, true);
         canvas->drawText(20, newY, romFiles[cursor].c_str());
       }
     }
@@ -1368,7 +1405,6 @@ void selectRomMenu() {
       sms_joy_state_a = 0x3F;
       while (Serial1.available() > 0) {
         uint8_t joy_bits = Serial1.read();
-        if (!(joy_bits & 0x40)) { IntZ80(&cpu, INT_NMI); }
         if (joy_bits & 0x80) sms_joy_state_b = joy_bits & 0x3F;
         else sms_joy_state_a = joy_bits & 0x3F;
       }
@@ -1394,13 +1430,13 @@ void selectRomMenu() {
           current_dir = "/ROM";
         }
         listROMs();
-        cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true;
+        cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true; needClear = true;
       } else if (chosen.endsWith("/")) {
         String folderName = chosen.substring(0, chosen.length() - 1);
         if (current_dir.endsWith("/")) current_dir += folderName;
         else current_dir += "/" + folderName;
         listROMs();
-        cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true;
+        cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true; needClear = true;
       } else {
         if (current_dir.endsWith("/")) selectedRom = current_dir + chosen;
         else selectedRom = current_dir + "/" + chosen;
@@ -1499,6 +1535,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
       current_scanline = i;
 
       ExecZ80(&cpu, CPU_CYCLE_NOWAIT);
+      if (nmiRequest) { nmiRequest = false; IntZ80(&cpu, INT_NMI); }   // PAUSE ボタン(loop 側が要求だけ出す)
 
       if (currentVideoMode == VideoMode::MODE4) {
         smsVdp->scanlineCheck(i);
@@ -1766,6 +1803,11 @@ void setup() {
     }
   }
 
+  // 電池でバックアップされた SRAM の代わり: 前に遊んだときのスロット 0 を電源投入前に読む
+  // (実機と同じく、ゲームが起動したときにはもうセーブデータがある)
+  memset(cart_ram, 0, sizeof(cart_ram));
+  if (readSramFile(0)) Serial.println("SRAM (slot 0) loaded");
+
   memset(&cpu, 0, sizeof(Z80));
   ResetZ80(&cpu);
   cpu.IPeriod = 224;
@@ -1877,6 +1919,7 @@ void loop() {
 #endif
     updateController();
     updateKeyboard();
+    autoSaveSram();
 #ifdef USE_SERIAL_DEBUG
     c1_inp += esp_timer_get_time() - t2;
 #endif

@@ -81,22 +81,16 @@ void VDP::reset() {
 	memcpy(cramRGB, tms9918a_fixed_palette, 16);
 }
 
+// データポートへの書き込み(実機: コード 0/1/2 は VRAM、3 は CRAM。どれでもアドレスは +1 され、
+// 書いた値がそのまま読み出しバッファにも入る)。
+// 以前はコード 2(レジスタ書き込みの直後)だと何も書かずアドレスも進めず、読み出しバッファには
+// 次のアドレスの VRAM を先読みしていた。
 void IRAM_ATTR VDP::writeData(uint8_t v) {
 	vcmd_ = false;
-	switch (vcode_) {
-		case 0:
-		case 1:
-			vram[vaddr_ & 0x3FFF] = v;
-			vaddr_ = (vaddr_ + 1) & 0x3FFF;
-			rbuf_ = vram[vaddr_];
-			break;
-		case 3:
-			setCRAM(vaddr_ & 0x1F, v);
-			vaddr_ = (vaddr_ + 1) & 0x3FFF;
-			break;
-		default:
-			break;
-	}
+	if (vcode_ == 3) setCRAM(vaddr_ & 0x1F, v);
+	else             vram[vaddr_ & 0x3FFF] = v;
+	vaddr_ = (vaddr_ + 1) & 0x3FFF;
+	rbuf_ = v;
 }
 
 uint8_t IRAM_ATTR VDP::readData() {
@@ -109,7 +103,9 @@ uint8_t IRAM_ATTR VDP::readData() {
 
 void IRAM_ATTR VDP::writeControl(uint8_t v) {
 	if (!vcmd_) {
+		// 1バイト目でアドレスの下位8ビットはすぐ書き換わる(実機と同じ)
 		vlatch_ = v;
+		vaddr_ = (vaddr_ & 0x3F00) | v;
 		vcmd_ = true;
 		return;
 	}
@@ -137,6 +133,11 @@ void IRAM_ATTR VDP::writeControl(uint8_t v) {
 
 uint8_t IRAM_ATTR VDP::readControl() {
 	uint8_t ret = status_;
+	// 【注意】実機はステータスを読むとコントロールポートの「2バイト目待ち」(vcmd_)も解除するが、
+	// ここでは解除しない。割込みは各ラインの終わりでしか受け付けないので、実機なら EI の直後に
+	// 入る割込みが最大1ライン遅れ、コントロールポートの1バイト目と2バイト目の間に入ることがある
+	// (ゴールデンアックス・ウォリアーの起動時、R#5 の書き込み)。そこで解除すると2バイト目が
+	// 1バイト目扱いになって以後のレジスタ設定がずれ、R#5/R#6 が 00 のままになる。
 	status_ = 0;
 	vint_pending_ = false;
 	hint_pending_ = false;
@@ -286,7 +287,7 @@ void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
 	int count = 0;
 	int jobs_sx[64];
 	uint8_t jobs_tile[64];
-	int jobs_sprite_y[64];
+	int jobs_line[64];
 	int job_count = 0;
 
 	const uint8_t *vram_ptr = vram;
@@ -296,8 +297,11 @@ void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
 		int sy = vram_ptr[(sat_masked + s) & 0x3FFF];
 		if (sy == 0xD0) break;
 
-		int sprite_y = sy + 1;
-		if (y < sprite_y || y >= sprite_y + sph) continue;
+		// スプライトは Y+1 ライン目から。実機は 8ビットで比べるので Y=F0h〜FFh は画面の上端に
+		// 下側だけが出る(Y=FFh なら 0 ライン目から全部)。以前は Y+1 を 256 以上のまま比べていたので
+		// 出なかった(ガントレットは Y=FFh のスプライトでプレイフィールド右端の上2キャラを隠している)
+		int line = (uint8_t)(y - sy - 1);
+		if (line >= sph) continue;
 
 		if (!spriteHorizontalUnlimited && ++count > 8) {
 			status_ |= 0x40;
@@ -312,7 +316,7 @@ void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
 
 		jobs_sx[job_count] = sx;
 		jobs_tile[job_count] = tile;
-		jobs_sprite_y[job_count] = sprite_y;
+		jobs_line[job_count] = line;
 		job_count++;
 	}
 
@@ -330,11 +334,10 @@ void IRAM_ATTR VDP::renderSprites(int y, uint8_t *px, uint8_t *bginfo) {
 	for (int i = 0; i < job_count; i++) {
 		int sx = jobs_sx[i];
 		uint8_t tile = jobs_tile[i];
-		int sprite_y = jobs_sprite_y[i];
+		int local_y = jobs_line[i];
 
 		if (tall) tile &= 0xFE;
 
-		int local_y = y - sprite_y;
 		if (tall && local_y >= 8) {
 			tile++;
 			local_y -= 8;

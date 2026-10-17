@@ -13,8 +13,19 @@
 /**     changes to this file.                               **/
 /*************************************************************/
 
+/* ESP32 の Arduino は -fno-jump-tables で全体をコンパイルするので、命令の振り分け(256 通りの switch)が
+   比較と分岐を約 8 段たどる形になる。このファイルだけ分岐表を使う(表を 1 回引いて飛ぶ)。 */
+#if defined(__GNUC__) && defined(ARDUINO)
+#pragma GCC optimize("jump-tables")
+#endif
 #include "Z80.h"
 #include "Tables.h"
+/* プレフィックス命令(CB/ED/DD/FD)の処理はフラッシュに置く(ExecZ80 に埋め込まれると IRAM に入りきらない) */
+#if defined(__GNUC__)
+#define Z80_NOINLINE __attribute__((noinline))
+#else
+#define Z80_NOINLINE
+#endif
 #include <stdio.h>
 #include <esp_attr.h>
 
@@ -357,7 +368,7 @@ enum CodesED
   DB_F8,DB_F9,DB_FA,DB_FB,DB_FC,DB_FD,DB_FE,DB_FF
 };
 
-static void CodesCB(register Z80 *R)
+static Z80_NOINLINE void CodesCB(register Z80 *R)
 {
   register byte I;
 
@@ -376,7 +387,7 @@ static void CodesCB(register Z80 *R)
   }
 }
 
-static void CodesDDCB(register Z80 *R)
+static Z80_NOINLINE void CodesDDCB(register Z80 *R)
 {
   register pair J;
   register byte I;
@@ -399,7 +410,7 @@ static void CodesDDCB(register Z80 *R)
 #undef XX
 }
 
-static void CodesFDCB(register Z80 *R)
+static Z80_NOINLINE void CodesFDCB(register Z80 *R)
 {
   register pair J;
   register byte I;
@@ -422,7 +433,7 @@ static void CodesFDCB(register Z80 *R)
 #undef XX
 }
 
-static void CodesED(register Z80 *R)
+static Z80_NOINLINE void CodesED(register Z80 *R)
 {
   register byte I;
   register pair J;
@@ -444,7 +455,7 @@ static void CodesED(register Z80 *R)
   }
 }
 
-static void CodesDD(register Z80 *R)
+static Z80_NOINLINE void CodesDD(register Z80 *R)
 {
   register byte I;
   register pair J;
@@ -471,7 +482,7 @@ static void CodesDD(register Z80 *R)
 #undef XX
 }
 
-static void CodesFD(register Z80 *R)
+static Z80_NOINLINE void CodesFD(register Z80 *R)
 {
   register byte I;
   register pair J;
