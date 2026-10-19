@@ -53,16 +53,14 @@ Each core within this software complies with the policies of FabGL, Marat Fayzul
 
 ## 📂 SD Card Structure & Setup
 
-Please place the following folders and files in the root directory of your MicroSD card.
-The `SAVE` folder and its contents must be created manually before launching the emulator.
+Create a `/SMS` folder in the root of your MicroSD card and put the game ROMs in `/SMS/ROM` (MSX1 uses `/MSX1`, MSX2 `/MSX2`, PC-8801 `/PC88` and X1 `/X1`, so one card can hold every machine).
+The `SAVE` folder is created automatically when the first save is written.
 
 ```text
 / (SD Root)
-├── /ROM              : Storage for game ROM files
-│   └── /SAVE         : Storage for state save data
-│       ├── slot1.st  : Save data for Slot 1
-│       ├── slot2.st  : Save data for Slot 2
-│       └── slot3.st  : Save data for Slot 3
+└── /SMS
+    └── /ROM              : Storage for game ROM files (.sms / .sg, sub-folders allowed)
+        └── /SAVE         : Storage for SRAM and state save data (created automatically)
 ```
 
 ---
@@ -76,7 +74,7 @@ Please modify the source code to fit your keyboard layout if localization (e.g.,
 - **`[Shift] + [F12]`** : Hardware Reset (Reboots the ESP32)
 
 ### 2. SRAM Save & Load
-Titles supporting SRAM (battery backup) keep it on the SD card (`/ROM/SAVE/<rom name>_0.sav` etc.).
+Titles supporting SRAM (battery backup) keep it on the SD card (`/SMS/ROM/SAVE/<rom name>_0.sav` etc.).
 
 - **Automatic (slot 0, works like the battery)**: slot 0 is loaded automatically when the game starts, and saved automatically 2 seconds after the game writes to SRAM. Just save inside the game as on the real machine.
 - **Manual copies (slots 1 / 2)**: `[Shift] + [F10]` / `[Shift] + [F9]` save SRAM to slot 1 / 2; `[F10]` / `[F9]` load it.
@@ -172,16 +170,14 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 
 ## 📂 SDカードの構成とセットアップ
 
-MicroSDカードのルートディレクトリに、以下のフォルダおよびファイルを配置してください。
-`SAVE` フォルダとその中身は、エミュレータ起動前にあらかじめ作成しておく必要があります。
+MicroSDカードのルートに `/SMS` フォルダを作り、ゲームROMを `/SMS/ROM` に入れてください（MSX1 は `/MSX1`、MSX2 は `/MSX2`、PC-8801 は `/PC88`、X1 は `/X1` なので、1枚のカードに全機種を入れられます）。
+`SAVE` フォルダは、最初にセーブしたときに自動で作られます。
 
 ```text
 / (SD Root)
-├── /ROM              : ゲームROMファイルなどを格納
-│   └── /SAVE         : ステートセーブデータ保存用フォルダ
-│       ├── slot1.st  : スロット1のセーブデータ
-│       ├── slot2.st  : スロット2のセーブデータ
-│       └── slot3.st  : スロット3のセーブデータ
+└── /SMS
+    └── /ROM              : ゲームROMファイル（.sms / .sg。中にフォルダを作ってもよい）
+        └── /SAVE         : SRAM とステートセーブの保存用フォルダ（自動で作られます）
 ```
 
 ---
@@ -195,7 +191,7 @@ MicroSDカードのルートディレクトリに、以下のフォルダおよ�
 - **`[Shift] + [F12]`** : ハードウェアリセット (ESP32を再起動します)
 
 ### 2. SRAMセーブ＆ロード
-SRAM（電池バックアップ）に対応したタイトルは、その内容をSDカード（`/ROM/SAVE/<ROM名>_0.sav` など）に保存します。
+SRAM（電池バックアップ）に対応したタイトルは、その内容をSDカード（`/SMS/ROM/SAVE/<ROM名>_0.sav` など）に保存します。
 
 - **自動（スロット0。電池の代わり）**: ゲームを始めるときにスロット0を自動で読み込み、ゲームがSRAMを書き換えたら2秒後に自動で保存します。実機と同じく、ゲームの中でセーブするだけで残ります。
 - **手動の控え（スロット1・2）**: `[Shift] + [F10]` / `[Shift] + [F9]` でスロット1 / 2 に保存、`[F10]` / `[F9]` で読み込みます。

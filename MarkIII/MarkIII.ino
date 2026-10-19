@@ -95,6 +95,9 @@
 #define SD_MOSI 12
 #define SD_CS 13
 
+// SD カードの中のマーク3 のフォルダ(/ROM とセーブの /ROM/SAVE はこの下。MSX1 は /MSX1、MSX2 は /MSX2)
+#define SD_ROOT "/SMS"
+
 // ORANGE ESPer
 // #define SD_SCLK 18
 // #define SD_MISO 19
@@ -190,7 +193,7 @@ void initSCCPresets() {
 // for mark3
 String selectedRom;
 std::vector<String> romFiles;
-String current_dir = "/ROM";
+String current_dir = SD_ROOT "/ROM";
 uint8_t sms_joy_state_a = 0xFF;
 uint8_t sms_joy_state_b = 0xFF;
 uint8_t sms_memory_control = 0x00;
@@ -879,7 +882,7 @@ void flashStatus(const char* msg, int waitMs = 0) {
 
 String getSaveFilePath(int slotNumber) {
   if (current_rom_path.length() == 0) {
-    return "/ROM/SAVE/default_" + String(slotNumber) + ".sav";
+    return SD_ROOT "/ROM/SAVE/default_" + String(slotNumber) + ".sav";
   }
 
   int slashIndex = current_rom_path.lastIndexOf('/');
@@ -892,14 +895,14 @@ String getSaveFilePath(int slotNumber) {
 
   String slotSuffix = "";
   slotSuffix = "_" + String(slotNumber);
-  return "/ROM/SAVE/" + fileName + slotSuffix + ".sav";
+  return SD_ROOT "/ROM/SAVE/" + fileName + slotSuffix + ".sav";
 }
 
 // SRAM(カートリッジのバックアップ RAM)のファイル。スロット 0 は電池の代わり:
 // ゲームを始めるときに自動で読み、ゲームが SRAM を書き換えたら 2 秒後に自動で保存する。
 // スロット 1 / 2 は手動の控え(Shift+F10 / Shift+F9 で保存、F10 / F9 で読み込み)。
 bool writeSramFile(int slotNumber) {
-  if (!SD.exists("/ROM/SAVE")) SD.mkdir("/ROM/SAVE");
+  if (!SD.exists(SD_ROOT "/ROM/SAVE")) { SD.mkdir(SD_ROOT); SD.mkdir(SD_ROOT "/ROM"); SD.mkdir(SD_ROOT "/ROM/SAVE"); }
   File file = SD.open(getSaveFilePath(slotNumber), FILE_WRITE);
   if (!file) return false;
   size_t n = file.write(cart_ram, sizeof(cart_ram));
@@ -945,12 +948,12 @@ void autoSaveSram() {
 }
 
 String getStateFilePath() {
-  if (current_rom_path.length() == 0) return "/ROM/SAVE/default_st.sav";
+  if (current_rom_path.length() == 0) return SD_ROOT "/ROM/SAVE/default_st.sav";
   int slash = current_rom_path.lastIndexOf('/');
   String name = (slash == -1) ? current_rom_path : current_rom_path.substring(slash + 1);
   int dot = name.lastIndexOf('.');
   if (dot != -1) name = name.substring(0, dot);
-  return "/ROM/SAVE/" + name + "_st.sav";
+  return SD_ROOT "/ROM/SAVE/" + name + "_st.sav";
 }
 
 void saveStateToPSRAM() {
@@ -1000,7 +1003,7 @@ void saveStateToSD() {
     flashStatus("NO STATE IN PSRAM", 1500);
     return;
   }
-  if (!SD.exists("/ROM/SAVE")) SD.mkdir("/ROM/SAVE");
+  if (!SD.exists(SD_ROOT "/ROM/SAVE")) { SD.mkdir(SD_ROOT); SD.mkdir(SD_ROOT "/ROM"); SD.mkdir(SD_ROOT "/ROM/SAVE"); }
   String path = getStateFilePath();
   File f = SD.open(path, FILE_WRITE);
   if (!f) { flashStatus("STATE SD WRITE FAIL", 2000); return; }
@@ -1254,11 +1257,11 @@ void listROMs() {
   const String EXT_SG = "SG";
 
   if (!SD.exists(current_dir.c_str())) {
-    if (current_dir == "/ROM") { SD.mkdir("/ROM"); return; }
-    else { current_dir = "/ROM"; }
+    if (current_dir == SD_ROOT "/ROM") { SD.mkdir(SD_ROOT); SD.mkdir(SD_ROOT "/ROM"); return; }
+    else { current_dir = SD_ROOT "/ROM"; }
   }
 
-  if (current_dir != "/ROM" && current_dir != "/ROM/") {
+  if (current_dir != SD_ROOT "/ROM" && current_dir != SD_ROOT "/ROM/") {
     romFiles.push_back("..");
   }
 
@@ -1289,7 +1292,7 @@ void listROMs() {
 }
 
 void selectRomMenu() {
-  current_dir = "/ROM";
+  current_dir = SD_ROOT "/ROM";
   listROMs();
   
   if (romFiles.empty()) {
@@ -1427,7 +1430,7 @@ void selectRomMenu() {
         if (lastSlash > 0) {
           current_dir = current_dir.substring(0, lastSlash);
         } else {
-          current_dir = "/ROM";
+          current_dir = SD_ROOT "/ROM";
         }
         listROMs();
         cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true; needClear = true;
