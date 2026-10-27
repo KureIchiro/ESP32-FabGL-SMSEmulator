@@ -12,7 +12,7 @@ An emulator for the SEGA MarkIII / Master System using ESP32 and the **FabGL** l
 ## 📝 Overview
 
 The goal of this project is to build a "comfortable SEGA MarkIII environment" within the resource constraints of the ESP32.
-- **Frame Rate**: 60 FPS (59.94Hz, every frame rendered)
+- **Target Frame Rate**: Approx. 30 FPS
 - **Audio Limitations**: 
   - The reproducibility of the FM sound source (especially the rhythm section) is low due to FabGL's sampling rate constraints.
   - Titles using PSG sampling playback also suffer from lower audio fidelity for the same reason.
@@ -53,16 +53,14 @@ Each core within this software complies with the policies of FabGL, Marat Fayzul
 
 ## 📂 SD Card Structure & Setup
 
-Please place the following folders and files in the root directory of your MicroSD card.
-The `SAVE` folder and its contents must be created manually before launching the emulator.
+Create a `/SMS` folder in the root of your MicroSD card and put the game ROMs in `/SMS/ROM` (MSX1 uses `/MSX1`, MSX2 `/MSX2`, PC-8801 `/PC88` and X1 `/X1`, so one card can hold every machine).
+The `SAVE` folder is created automatically when the first save is written.
 
 ```text
 / (SD Root)
-├── /ROM              : Storage for game ROM files
-│   └── /SAVE         : Storage for state save data
-│       ├── slot1.st  : Save data for Slot 1
-│       ├── slot2.st  : Save data for Slot 2
-│       └── slot3.st  : Save data for Slot 3
+└── /SMS
+    └── /ROM              : Storage for game ROM files (.sms / .sg, sub-folders allowed)
+        └── /SAVE         : Storage for SRAM and state save data (created automatically)
 ```
 
 ---
@@ -76,10 +74,12 @@ Please modify the source code to fit your keyboard layout if localization (e.g.,
 - **`[Shift] + [F12]`** : Hardware Reset (Reboots the ESP32)
 
 ### 2. SRAM Save & Load
-Titles supporting SRAM (backup function) can save and restore their state to the SD card. Supports 3 slots.
+Titles supporting SRAM (battery backup) keep it on the SD card (`/SMS/ROM/SAVE/<rom name>_0.sav` etc.).
 
-- **Load State**: `[F9]` / `[F10]` / `[F11]` (Maps to Slots 1–3 respectively)
-- **Save State**: `[Shift] + [F9]` / `[Shift] + [F10]` / `[Shift] + [F11]` (Maps to Slots 1–3 respectively)
+- **Automatic (slot 0, works like the battery)**: slot 0 is loaded automatically when the game starts, and saved automatically 2 seconds after the game writes to SRAM. Just save inside the game as on the real machine.
+- **Manual copies (slots 1 / 2)**: `[Shift] + [F10]` / `[Shift] + [F9]` save SRAM to slot 1 / 2; `[F10]` / `[F9]` load it.
+- `[F11]` / `[Shift] + [F11]` load / save slot 0 by hand.
+- Loading while a game is running replaces the cartridge RAM immediately. Some games (such as Ys) also use this RAM as work memory, so it is safest to load from the title screen and then use the game's own load menu.
 
 ---
 
@@ -129,7 +129,7 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 ## 📝 概要
 
 本プロジェクトは、ESP32のリソース制約の中で「快適に動作するセガ・マークIII環境」を構築することを目的としています。
-- **フレームレート**: 60FPS（59.94Hz、全フレーム描画）
+- **ターゲットフレームレート**: 約30FPS
 - **サウンドに関する注意点**: 
   - FM音源（特にリズムセクション）は、FabGLのサンプリングレートの制約により再現度が低くなっています。
   - PSGでサンプリング再生を行っているタイトルについても、同様の理由で再現度が低くなります。
@@ -170,16 +170,14 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 
 ## 📂 SDカードの構成とセットアップ
 
-MicroSDカードのルートディレクトリに、以下のフォルダおよびファイルを配置してください。
-`SAVE` フォルダとその中身は、エミュレータ起動前にあらかじめ作成しておく必要があります。
+MicroSDカードのルートに `/SMS` フォルダを作り、ゲームROMを `/SMS/ROM` に入れてください（MSX1 は `/MSX1`、MSX2 は `/MSX2`、PC-8801 は `/PC88`、X1 は `/X1` なので、1枚のカードに全機種を入れられます）。
+`SAVE` フォルダは、最初にセーブしたときに自動で作られます。
 
 ```text
 / (SD Root)
-├── /ROM              : ゲームROMファイルなどを格納
-│   └── /SAVE         : ステートセーブデータ保存用フォルダ
-│       ├── slot1.st  : スロット1のセーブデータ
-│       ├── slot2.st  : スロット2のセーブデータ
-│       └── slot3.st  : スロット3のセーブデータ
+└── /SMS
+    └── /ROM              : ゲームROMファイル（.sms / .sg。中にフォルダを作ってもよい）
+        └── /SAVE         : SRAM とステートセーブの保存用フォルダ（自動で作られます）
 ```
 
 ---
@@ -193,10 +191,12 @@ MicroSDカードのルートディレクトリに、以下のフォルダおよ�
 - **`[Shift] + [F12]`** : ハードウェアリセット (ESP32を再起動します)
 
 ### 2. SRAMセーブ＆ロード
-SRAM（バックアップ機能）に対応したタイトルは、その内容をSDカードへ保存・復元できます。3つのスロットに対応しています。
+SRAM（電池バックアップ）に対応したタイトルは、その内容をSDカード（`/SMS/ROM/SAVE/<ROM名>_0.sav` など）に保存します。
 
-- **状態のロード**: `[F9]` / `[F10]` / `[F11]`（それぞれスロット1〜3に対応）
-- **状態のセーブ**: `[Shift] + [F9]` / `[Shift] + [F10]` / `[Shift] + [F11]`（それぞれスロット1〜3に対応）
+- **自動（スロット0。電池の代わり）**: ゲームを始めるときにスロット0を自動で読み込み、ゲームがSRAMを書き換えたら2秒後に自動で保存します。実機と同じく、ゲームの中でセーブするだけで残ります。
+- **手動の控え（スロット1・2）**: `[Shift] + [F10]` / `[Shift] + [F9]` でスロット1 / 2 に保存、`[F10]` / `[F9]` で読み込みます。
+- `[F11]` / `[Shift] + [F11]` はスロット0を手動で読み込み / 保存します。
+- 遊んでいる途中で読み込むと、カートリッジのRAMがすぐに入れ替わります。イースのようにこのRAMを作業用にも使うゲームがあるので、タイトル画面で読み込んでからゲームのロードを使うのが安全です。
 
 ---
 

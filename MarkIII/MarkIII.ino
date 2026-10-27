@@ -1,33 +1,33 @@
 /* ============================================================================
  *  Sega Mark III / Master System Emulator for ESP32 (Work in Progress)
  * ============================================================================
- * 
+ *
  * [ Credits & Acknowledgments ]
  *  - Graphics/Audio Engine: FabGL by Fabrizio Di Vittorio.
  *  - Z80 CPU Core: Modified based on the work by Marat Fayzullin.
- *  - VDP Section: Modified based on the Sega VDP core originally derived from 
+ *  - VDP Section: Modified based on the Sega VDP core originally derived from
  *                 TMS9918A by David Latham and maintained by Marat Fayzullin.
  *  - FM Sound Unit: Modified based on "emu2413" by Mitsutaka Okazaki (MIT License).
  *  Special thanks to all authors for providing these excellent foundations.
- * 
+ *
  * [ Development Environment ]
  *  - Board Manager: ESP32 by Espressif Systems (v2.0.5 recommended)
  *  - Library: FabGL v1.0.9
- * 
+ *
  * [ Recommended Arduino IDE Settings ]
  *  - PSRAM: "Enabled"
  *  - Partition Scheme: "Default 4MB with SPIFFS" or similar
  *  - ESP32 Dev Module
- * 
+ *
  * [ Disclaimer ]
- *  IN NO EVENT SHALL FABRIZIO DI VITTORIO, MARAT FAYZULLIN, DAVID LATHAM, 
- *  MITSUTAKA OKAZAKI, OR THE DEVELOPER BE LIABLE FOR ANY DIRECT, INDIRECT, 
- *  INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY OUT OF THE USE 
+ *  IN NO EVENT SHALL FABRIZIO DI VITTORIO, MARAT FAYZULLIN, DAVID LATHAM,
+ *  MITSUTAKA OKAZAKI, OR THE DEVELOPER BE LIABLE FOR ANY DIRECT, INDIRECT,
+ *  INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY OUT OF THE USE
  *  OF THIS SOFTWARE. USE AT YOUR OWN RISK.
- * 
+ *
  * [ Important Notes ]
  *  - This project is under development and may contain bugs or redundant code.
- *  - Subject to the license policies of FabGL, Marat Fayzullin (fMSX License), 
+ *  - Subject to the license policies of FabGL, Marat Fayzullin (fMSX License),
  *    and Mitsutaka Okazaki (MIT License).
  * ============================================================================
  */
@@ -36,7 +36,7 @@
  * ============================================================================
  *  Sega Mark III / Master System Emulator for ESP32 (Work in Progress)
  * ============================================================================
- * 
+ *
  * 【クレジットと謝辞】
  *  - グラフィック/オーディオエンジン: Fabrizio Di Vittorio氏による FabGL を使用しています。
  *  - Z80 CPUコア: Marat Fayzullin氏によるコードをベースに改変して使用しています。
@@ -44,22 +44,22 @@
  *                  セガVDP仕様へ改変・調整を加えた実装を使用しています。
  *  - FM音源ユニット: Mitsutaka Okazaki氏による「emu2413」をベースに改変して使用しています（MITライセンス）。
  *  素晴らしい基盤を公開されている諸氏に深く感謝の意を表します。
- * 
+ *
  * 【動作確認済み環境 / Required Libraries】
  *  - ボードマネージャ: ESP32 by Espressif Systems (v2.0.5 推奨)
  *  - 使用ライブラリ: FabGL v1.0.9
- * 
+ *
  * 【Arduino IDE 推奨設定】
- *  - PSRAM: "Enabled" 
+ *  - PSRAM: "Enabled"
  *  - Partition Scheme: "Default 4MB with SPIFFS" 等
  *  - ESP32 Dev Module
- * 
+ *
  * 【免責事項】
  *  本ソフトウェアの使用によって生じたいかなる損害（直接的・間接的を問わず）
  *  についても、Fabrizio Di Vittorio氏、Marat Fayzullin氏、David Latham氏、
  *  Mitsutaka Okazaki氏、および開発者本人は一切の責任を負いません。
  *  利用者の責任において使用してください。
- * 
+ *
  * 【注意事項】
  *  - 本プロジェクトは開発中であり、不具合や最適化不足なコードが含まれる場合があります。
  *  - 本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (fMSX License)、
@@ -76,33 +76,18 @@
 #include <SD.h>
 #include <fabgl.h>
 #include <vector>
-//#include <WiFi.h>
 #include "soc/rtc_wdt.h"
 #include "esp_task_wdt.h"
 #include "Z80.h"
 #include "vdp.h"
 #include "emu2413.h"
 
-//#define USE_SERIAL_DEBUG
-//#define USE_SIGNAL_DEBUG
-
-// Output cpuTask/loop timing stats (min/max/avg per second) via Serial.
-//#define USE_SERIAL_DEBUG2
-
-// TTGO VGA32
 #define SD_SCLK 14
 #define SD_MISO 2
 #define SD_MOSI 12
 #define SD_CS 13
 
-// SD カードの中のマーク3 のフォルダ(/ROM とセーブの /ROM/SAVE はこの下。MSX1 は /MSX1、MSX2 は /MSX2)
 #define SD_ROOT "/SMS"
-
-// ORANGE ESPer
-// #define SD_SCLK 18
-// #define SD_MISO 19
-// #define SD_MOSI 23 // or 12
-// #define SD_CS 5
 
 extern "C" {
   uint8_t readByte(void* context, uint16_t addr);
@@ -120,7 +105,6 @@ extern "C" {
 
 Z80 cpu;
 
-// Z80.c は読み出しと RAM(C000h〜FFFBh)への書き込みを直接行い、それ以外の書き込みだけここを呼ぶ
 void IRAM_ATTR WrZ80Slow(zword Addr, byte Value) {
   writeByte(NULL, Addr, Value);
 }
@@ -135,10 +119,6 @@ void PatchZ80(Z80* R) {}
 void listROMs();
 void detectMapper(uint32_t size);
 void updateKeyboard();
-// PAUSE ボタン(F12 / ジョイスティックのボタン3)の NMI の要求。キー入力はコア1(loop)で読むが、
-// NMI はコア0(cpuTask)が ExecZ80 の合間に入れる。【不具合修正】以前はコア1から IntZ80 を直接
-// 呼んでいて、実行中の Z80(PC などをレジスタの写しで持っている)と書き換えがぶつかり、
-// スタックがずれて画面が崩れた
 static volatile bool nmiRequest = false;
 void updateFabGLSound();
 
@@ -149,7 +129,6 @@ fabgl::SoundGenerator soundGenerator;
 fabgl::NoiseWaveformGenerator noiseGen;
 fabgl::PS2Controller PS2Controller;
 
-//psg scc
 int8_t scc_waveform[6][32] = { 0 };
 uint16_t scc_f[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_v[] = { 0, 0, 0, 0, 0, 0 };
@@ -161,22 +140,16 @@ const uint8_t SCC_VOL_TABLE[16] = {
   0, 2, 4, 7, 10, 15, 21, 26, 33, 39, 47, 54, 62, 68, 73, 75
 };
 
-// リード(メロディ): ノコギリ波ベースで2〜4倍音をやや持ち上げたブラス寄りの音
-// 倍音比 1 : 0.77 : 0.56 : 0.40 : 0.25 : 0.16 ...
 uint8_t SCC_Ys2_Lead[32] = {
   0x00, 0x02, 0x06, 0x0A, 0x0F, 0x13, 0x18, 0x1D, 0x23, 0x2A, 0x34, 0x41, 0x53, 0x6C, 0x7C, 0x5A,
   0x00, 0xA6, 0x84, 0x94, 0xAD, 0xBF, 0xCC, 0xD6, 0xDD, 0xE3, 0xE8, 0xED, 0xF1, 0xF6, 0xFA, 0xFE
 };
 
-// バッキング(和音・アルペジオ): デューティ25%のパルス波。4倍音が無く、PSGの矩形波より少し太い
-// 倍音比 1 : 0.69 : 0.31 : 0 : 0.16 : 0.17 ...
 uint8_t SCC_Ys2_Back[32] = {
   0x29, 0x6D, 0x7C, 0x79, 0x7B, 0x79, 0x7C, 0x6D, 0x29, 0xE5, 0xD5, 0xD8, 0xD7, 0xD8, 0xD7, 0xD7,
   0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD8, 0xD7, 0xD8, 0xD5, 0xE5
 };
 
-// ベース: 基音を主体に2〜3倍音を少し足した丸い低音。スピーカーでも輪郭が出る
-// 倍音比 1 : 0.39 : 0.15 : 0.04
 uint8_t SCC_Ys2_Bass[32] = {
   0x00, 0x0B, 0x15, 0x20, 0x2B, 0x36, 0x42, 0x4D, 0x59, 0x66, 0x72, 0x7B, 0x7C, 0x71, 0x58, 0x30,
   0x00, 0xD0, 0xA8, 0x8F, 0x84, 0x85, 0x8E, 0x9A, 0xA7, 0xB3, 0xBE, 0xCA, 0xD5, 0xE0, 0xEB, 0xF5
@@ -190,7 +163,6 @@ void initSCCPresets() {
   }
 }
 
-// for mark3
 String selectedRom;
 std::vector<String> romFiles;
 String current_dir = SD_ROOT "/ROM";
@@ -205,13 +177,12 @@ String current_rom_path = "";
 bool spriteHorizontalUnlimited = false;
 uint8_t renderCounter = 0;
 
-// main_ram と mem_read_map は Z80.c が直接引く(RAM への書き込みと読み出しは関数を呼ばない)
 extern "C" { uint8_t* main_ram = nullptr; }
 uint8_t* game_rom_ptr = nullptr;
 uint8_t* bank_ptrs[3];
 uint32_t rom_size = 0;
 uint8_t cart_ram[32 * 1024];
-volatile uint32_t sramChanges = 0;   // ゲームが SRAM の値を書き換えた回数(自動保存の合図)
+volatile uint32_t sramChanges = 0;
 bool sram_enabled = false;
 uint8_t sram_bank = 0;
 enum SmsMapperType { SMS_MAPPER_SEGA,
@@ -223,7 +194,6 @@ extern "C" { uint8_t* mem_read_map[64]; }
 std::vector<String> cachedRomFiles;
 String cachedDir = "";
 
-//VDP
 volatile bool frameReady = false;
 bool displayEnabled = true;
 
@@ -260,8 +230,6 @@ VideoMode determineVideoMode(const String& path, const uint8_t* rom_data = nullp
 
 VideoMode currentVideoMode = VideoMode::MODE4;
 VDP* smsVdp = nullptr;
-// MODE4ではVDPがFabGLのビューポートへ直接描く(drawBitmapを使わない)。
-// TMS9918Aモードは従来どおりラスタ＋drawBitmap。
 static uint8_t **mk3_rows = nullptr;
 static bool mk3_direct = false;
 
@@ -271,19 +239,19 @@ static DRAM_ATTR uint8_t g_vdp_cramRGB[32];
 static DRAM_ATTR uint8_t g_vdp_reg[16];
 
 struct SaveState {
-    char     magic[4];          // "SMS1"
-    bool     valid;             // 有効なデータが入っているか
-    VDPState vdp;               // VDP全状態（VRAM含む） ~16.4KB
-    Z80      cpu_state;         // Z80レジスタ/フラグ
-    uint8_t  ram[0x2000];       // メインRAM 8KB
-    uint8_t  sram_data[32768];  // カートリッジRAM 32KB
-    uint8_t  bank_regs[3];      // バンク番号（slot 0/1/2）
+    char     magic[4];
+    bool     valid;
+    VDPState vdp;
+    Z80      cpu_state;
+    uint8_t  ram[0x2000];
+    uint8_t  sram_data[32768];
+    uint8_t  bank_regs[3];
     bool     sram_enabled;
     uint8_t  sram_bank;
-    uint8_t  mapper_type;       // SmsMapperType をそのまま格納
+    uint8_t  mapper_type;
     bool     mapper_locked;
-    OPLL     fm_opll;           // YM2413内部状態の完全スナップショット
-    uint8_t  fm_patch_idx[18];  // 各スロットのpatchポインタ復元用インデックス
+    OPLL     fm_opll;
+    uint8_t  fm_patch_idx[18];
     bool     ym2413_en;
     bool     psg2scc_en;
 };
@@ -299,10 +267,6 @@ private:
 
   static const int32_t OPLL_CLOCK = 3579545;
 
-  // 1次IIRローパスフィルタ（固定小数点、シフト演算のみ）
-  // y[n] = y[n-1] + (x[n]-y[n-1]) >> LP_SHIFT
-  // LP_SHIFTが大きいほどカットオフが低くなる(まろやかになるが遅れも増える)。
-  // 内部生成レートが16384Hzである点を踏まえ、まずは中庸な値から調整する。
   static const int LP_SHIFT = 2;
   int32_t lpState = 0;
 
@@ -324,8 +288,6 @@ public:
     if (opll) OPLL_delete(opll);
   }
 
-  // FMユニットに一度でも書き込まれたか。未使用のままのゲームでOPLL合成を
-  // 丸ごと省くための判定に使う（下の touched() 参照）。
   volatile bool touched_ = false;
   bool touched() const { return touched_; }
 
@@ -368,7 +330,7 @@ public:
 
   void resetOPLL() {
     if (opll) OPLL_reset(opll);
-    touched_ = false;   // リセット後は再び「未使用」に戻す
+    touched_ = false;
   }
 
   void getRegs(uint8_t* dest) {
@@ -388,7 +350,7 @@ public:
       OPLL_writeIO(opll, 1, src[i]);
     }
 
-    touched_ = true;    // ステート復元後はFMが鳴っている可能性がある
+    touched_ = true;
     clearBuffer();
   }
 
@@ -406,7 +368,7 @@ public:
     opll->conv = keepConv;
     for (int i = 0; i < 18; i++)
       opll->slot[i].patch = &opll->patch[patch_idx[i] < 38 ? patch_idx[i] : 0];
-    touched_ = true;    // ステート復元後はFMが鳴っている可能性がある
+    touched_ = true;
     clearBuffer();
   }
 
@@ -517,10 +479,6 @@ private:
   volatile int head = 0;
   volatile int tail = 0;
 
-  // 1次IIRローパスフィルタ（固定小数点、シフト演算のみ）。
-  // 移動平均(tick積分)はくし形フィルタになりヌル点(特定音程が無音化)が
-  // 出るため不採用。1次IIRは単調減衰でヌル点を持たず、矩形波の
-  // 硬いエッジだけを丸められる。
   static const int LP_SHIFT = 2;
   int32_t lpState = 0;
 
@@ -771,14 +729,6 @@ void writeWord(void* ctx, int addr, int val) {
   writeByte(ctx, addr + 1, val >> 8);
 }
 
-// I/O ポートは A7・A6・A0 だけでデコードされる(Mark III / SMS / SG-1000 共通)。
-//   00h〜3Fh: 書き 偶数=メモリ制御(3Eh) 奇数=I/O制御(3Fh)
-//   40h〜7Fh: 読み 偶数=Vカウンタ 奇数=Hカウンタ / 書き PSG
-//   80h〜BFh: 偶数=VDPデータ 奇数=VDPコントロール
-//   C0h〜FFh: 読み 偶数=パッド1(DCh) 奇数=パッド2(DDh)  (F0h〜F2h は FM ユニット)
-// 以前は BEh/BFh・DCh/DDh・7Eh/7Fh などちょうどの番号しか見ていなかった。
-// ゴールデンアックス・ウォリアーは BDh で VDP のアドレスを設定してから敵のパターンを
-// 書き直すので、その設定が捨てられて敵がゴミになっていた。
 inline int IRAM_ATTR readIO(void* context, int port) {
   uint8_t p = (uint8_t)port;
 
@@ -816,7 +766,7 @@ inline int IRAM_ATTR readIO(void* context, int port) {
     return v;
   }
 
-  return 0xFF;   // Hカウンタ(40h〜7Fh の奇数)は未実装
+  return 0xFF;
 }
 
 inline void IRAM_ATTR writeIO(void* context, int port, int val) {
@@ -898,9 +848,6 @@ String getSaveFilePath(int slotNumber) {
   return SD_ROOT "/ROM/SAVE/" + fileName + slotSuffix + ".sav";
 }
 
-// SRAM(カートリッジのバックアップ RAM)のファイル。スロット 0 は電池の代わり:
-// ゲームを始めるときに自動で読み、ゲームが SRAM を書き換えたら 2 秒後に自動で保存する。
-// スロット 1 / 2 は手動の控え(Shift+F10 / Shift+F9 で保存、F10 / F9 で読み込み)。
 bool writeSramFile(int slotNumber) {
   if (!SD.exists(SD_ROOT "/ROM/SAVE")) { SD.mkdir(SD_ROOT); SD.mkdir(SD_ROOT "/ROM"); SD.mkdir(SD_ROOT "/ROM/SAVE"); }
   File file = SD.open(getSaveFilePath(slotNumber), FILE_WRITE);
@@ -910,8 +857,6 @@ bool writeSramFile(int slotNumber) {
   return n == sizeof(cart_ram);
 }
 
-// 読めたら true。ファイルが無いときは今の SRAM をそのまま残す
-// (【不具合修正】以前は 0 で消していたので、遊んでいる途中のデータが消えてゲームが続けられなくなった)
 bool readSramFile(int slotNumber) {
   String savePath = getSaveFilePath(slotNumber);
   if (!SD.exists(savePath)) return false;
@@ -935,7 +880,6 @@ void loadSRAMfromFile(int slotNumber) {
   flashStatus(readSramFile(slotNumber) ? "SRAM Loaded!" : "SRAM Load Failed!", 1000);
 }
 
-// ゲームが SRAM を書き換え、そのあと 2 秒書き換えが無ければスロット 0 へ保存する(loop から毎フレーム)
 void autoSaveSram() {
   static uint32_t seen = 0, changedAt = 0;
   static bool pending = false;
@@ -1064,7 +1008,7 @@ void updateKeyboard() {
       isShift = !isBreak;
     }
 
-    if (sc == 0x03) {  // F5
+    if (sc == 0x03) {
       if (!isBreak && !f5_held) {
         f5_held = true;
         if (isShift) {
@@ -1082,7 +1026,7 @@ void updateKeyboard() {
           loadStateFromPSRAM();
         }
       } else if (isBreak) f6_held = false;
-    } else if (sc == 0x83) {  // F7
+    } else if (sc == 0x83) {
       if (!isBreak && !f7_held) {
         f7_held = true;
         if (!isShift) {
@@ -1102,7 +1046,7 @@ void updateKeyboard() {
           }
         }
       } else if (isBreak) f7_held = false;
-    } else if (sc == 0x0A) {  // F8
+    } else if (sc == 0x0A) {
       if (!isBreak && !f8_held) {
         f8_held = true;
         if (!isShift) {
@@ -1161,7 +1105,7 @@ void updateKeyboard() {
         if (isShift) {
           ESP.restart();
         } else {
-          nmiRequest = true;                       // PAUSE: NMI はコア0(cpuTask)が入れる
+          nmiRequest = true;
         }
       } else if (isBreak) f12_held = false;
     }
@@ -1172,15 +1116,15 @@ void updateKeyboard() {
           if (isBreak) kbdJoyState |= (1 << 0);
           else kbdJoyState &= ~(1 << 0);
           break;
-        case 0x72:  // DOWN
+        case 0x72:
           if (isBreak) kbdJoyState |= (1 << 1);
           else kbdJoyState &= ~(1 << 1);
           break;
-        case 0x6B:  // LEFT
+        case 0x6B:
           if (isBreak) kbdJoyState |= (1 << 2);
           else kbdJoyState &= ~(1 << 2);
           break;
-        case 0x74:  // RIGHT
+        case 0x74:
           if (isBreak) kbdJoyState |= (1 << 3);
           else kbdJoyState &= ~(1 << 3);
           break;
@@ -1188,11 +1132,11 @@ void updateKeyboard() {
       }
     } else {
       switch (sc) {
-        case 0x1A:  // Z
+        case 0x1A:
           if (isBreak) kbdJoyState |= (1 << 4);
           else kbdJoyState &= ~(1 << 4);
           break;
-        case 0x22:  // X
+        case 0x22:
           if (isBreak) kbdJoyState |= (1 << 5);
           else kbdJoyState &= ~(1 << 5);
           break;
@@ -1270,14 +1214,14 @@ void listROMs() {
 
   while (File file = dir.openNextFile()) {
     String name = file.name();
-    
+
     if (file.isDirectory()) {
       romFiles.push_back(name + "/");
     } else {
       int dotIdx = name.lastIndexOf('.');
       if (dotIdx != -1) {
         String ext = name.substring(dotIdx + 1);
-        ext.toUpperCase(); 
+        ext.toUpperCase();
         if (ext == EXT_SMS || ext == EXT_SG) {
           romFiles.push_back(name);
         }
@@ -1294,7 +1238,7 @@ void listROMs() {
 void selectRomMenu() {
   current_dir = SD_ROOT "/ROM";
   listROMs();
-  
+
   if (romFiles.empty()) {
     canvas->setBrushColor(RGB888(0, 0, 85));
     canvas->clear();
@@ -1306,7 +1250,6 @@ void selectRomMenu() {
   }
 
   auto kbd = PS2Controller.keyboard();
-  // 色は全機種共通: フォルダ = 水色、ファイル = 白、選んでいる項目 = 黄
   auto penFor = [&](int idx, bool sel) {
     const String &s = romFiles[idx];
     if (sel) canvas->setPenColor(RGB888(255, 255, 85));
@@ -1320,8 +1263,6 @@ void selectRomMenu() {
   const int maxRows = 18;
   bool selected = false;
   bool needRedrawAll = true;
-  // 画面全体を消すのは最初とフォルダを移ったときだけ。スクロールは一覧の行だけ描き直す
-  // (全部消して描くとちらつく。カーソル移動は前と今の2行だけ)
   bool needClear = true;
 
   while (!selected) {
@@ -1396,7 +1337,7 @@ void selectRomMenu() {
           if (cursor < (int)romFiles.size() - 1) cursor++;
           keyPressed = true;
         } else if (sc == 0x1A || sc == 0x22 || sc == 0x5A) {
-          doSelect = true; // Z, X, Enterキー
+          doSelect = true;
           keyPressed = true;
         }
       }
@@ -1424,7 +1365,7 @@ void selectRomMenu() {
 
     if (doSelect) {
       String chosen = romFiles[cursor];
-      
+
       if (chosen == "..") {
         int lastSlash = current_dir.lastIndexOf('/');
         if (lastSlash > 0) {
@@ -1484,16 +1425,11 @@ void initMemorySMS() {
 #define CPU_CYCLE_NOWAIT 228
 #define CPU_CYCLE_4MHZ 255
 #ifdef USE_SERIAL_DEBUG2
-// Plain variables (no custom struct type) so the Arduino-IDE auto-generated
-// function prototype -- which gets inserted near the top of the file,
-// before this point -- doesn't need a type it hasn't seen yet.
 int64_t cpuStatMinUs = INT64_MAX, cpuStatMaxUs = 0, cpuStatSumUs = 0, cpuStatLastPrintUs = 0;
 uint32_t cpuStatCount = 0;
 int64_t loopStatMinUs = INT64_MAX, loopStatMaxUs = 0, loopStatSumUs = 0, loopStatLastPrintUs = 0;
 uint32_t loopStatCount = 0;
 
-// Accumulates one elapsed-time sample and, once per second, prints
-// "<label> Lmin Mmax Aavg" (values in microseconds) then resets.
 void updateLoadStats(int64_t* minUs, int64_t* maxUs, int64_t* sumUs, uint32_t* count, int64_t* lastPrintUs, const char* label, int64_t elapsedUs) {
   if (elapsedUs < *minUs) *minUs = elapsedUs;
   if (elapsedUs > *maxUs) *maxUs = elapsedUs;
@@ -1515,7 +1451,7 @@ void updateLoadStats(int64_t* minUs, int64_t* maxUs, int64_t* sumUs, uint32_t* c
 #endif
 
 void IRAM_ATTR cpuTask(void* pvParameters) {
-  const int64_t frameTimeUs = 16684;// * 2;  // NTSC 59.94FPS
+  const int64_t frameTimeUs = 16684;
   int64_t nextFrameTime = esp_timer_get_time();
   static uint8_t renderTiming = 0;
   bool renderFrame = false;
@@ -1532,13 +1468,13 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     digitalWrite(14, HIGH);
 #endif
     nextFrameTime += frameTimeUs;
-    renderFrame = 1;//(renderTiming++ & renderCounter) == 0;
+    renderFrame = 1;
 
     for (int i = 0; i < 262; ++i) {
       current_scanline = i;
 
       ExecZ80(&cpu, CPU_CYCLE_NOWAIT);
-      if (nmiRequest) { nmiRequest = false; IntZ80(&cpu, INT_NMI); }   // PAUSE ボタン(loop 側が要求だけ出す)
+      if (nmiRequest) { nmiRequest = false; IntZ80(&cpu, INT_NMI); }
 
       if (currentVideoMode == VideoMode::MODE4) {
         smsVdp->scanlineCheck(i);
@@ -1571,43 +1507,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
         IntZ80(&cpu, 0x38);
       }
     }
-    // for (int i = 0; i < 262; ++i) {
-    //   current_scanline = i;
 
-    //   ExecZ80(&cpu, CPU_CYCLE_NOWAIT);
-
-    //   if (currentVideoMode == VideoMode::MODE4) {
-    //     smsVdp->scanlineCheck(i);
-    //   } else {
-    //     if (i == 192) {
-    //       smsVdp->status_ |= 0x80;
-    //     }
-    //   }
-
-    //   if (i < 192) {
-    //     if (currentVideoMode == VideoMode::MODE4) {
-    //       if (!renderFrame) {
-    //         smsVdp->renderSingleLine(i);
-    //       }
-    //     }
-    //   }
-
-    //   if (i == 192) {
-    //     if (currentVideoMode == VideoMode::TMS9918A) {
-    //       if (!renderFrame) {
-    //         smsVdp->tms9918a_rasterize();
-    //       }
-    //     }
-    //     if (!renderFrame) {
-    //       frameReady = true;
-    //     }
-    //   }
-
-    //   if ((currentVideoMode == VideoMode::MODE4 ? smsVdp->irqPending() : smsVdp->tms9918a_irq_pending())
-    //       && (cpu.IFF & IFF_1)) {
-    //     IntZ80(&cpu, 0x38);
-    //   }
-    // }
 #ifdef USE_SIGNAL_DEBUG
     digitalWrite(14, LOW);
 #endif
@@ -1652,7 +1552,6 @@ void printMemoryStats() {
 void setup() {
   Serial.begin(115200);
   Serial1.begin(115200, SERIAL_8N1, 39, -1);
-  //WiFi.mode(WIFI_OFF);
   setCpuFrequencyMhz(240);
 
   disableCore0WDT();
@@ -1776,10 +1675,6 @@ void setup() {
     }
   }
 
-  // ---- MODE4: ビューポート直描きの準備 ----
-  // メニューで積まれたプリミティブ(画面クリア等)を先に吐き切ってから、
-  // 以降のゲーム画面(0〜191行)はcanvasを使わず直接書く。
-  // flashStatus() は192行目以降にしか描かないので競合しない。
   if (smsVdp && currentVideoMode == VideoMode::MODE4) {
     DisplayController.processPrimitives();
     mk3_rows = (uint8_t**)heap_caps_malloc(sizeof(uint8_t*) * SCREEN_H,
@@ -1787,7 +1682,6 @@ void setup() {
     bool ok = (mk3_rows != nullptr);
     for (int y = 0; ok && y < SCREEN_H; y++) {
       uint8_t *row = DisplayController.getScanline(y);
-      // 256ドットを320幅の中央(x=32)へ。32は4の倍数なので行が4バイト境界なら整列は保たれる。
       if (!row || ((uintptr_t)row & 3)) {
         Serial.printf("VIEWPORT row %d is NULL or unaligned (%p) -> drawBitmap path\n", y, row);
         ok = false;
@@ -1806,8 +1700,6 @@ void setup() {
     }
   }
 
-  // 電池でバックアップされた SRAM の代わり: 前に遊んだときのスロット 0 を電源投入前に読む
-  // (実機と同じく、ゲームが起動したときにはもうセーブデータがある)
   memset(cart_ram, 0, sizeof(cart_ram));
   if (readSramFile(0)) Serial.println("SRAM (slot 0) loaded");
 
@@ -1849,18 +1741,9 @@ void updateAllSound() {
     for (int i = 0; i < 5; i++) {
       if (scc_ch[i]) {
         scc_ch[i]->updateParams((int8_t*)scc_waveform[0], 0, 0);
-        scc_ch[i]->fillBuffer();  // 明示的に無音でバッファを埋める
+        scc_ch[i]->fillBuffer();
       }
     }
-    // 【最適化】OPLLの合成は 1サンプルあたり約12us、16384Hzで
-    // コア1の約20%を占める。起動直後は psg2scc=false / ym2413_enabled=false
-    // なのでこの分岐に入り、FMを一切使わないゲーム(大半)でも無音のOPLLを
-    // 延々と合成し続けていた。実際にFMへ書き込みがあったときだけ回す。
-    //   ・0xF0/0xF1 への書き込み → writePort() が touched_ を立てる
-    //   ・0xF2 bit0 → ym2413_enabled
-    // どちらかが立てば以降は常に合成するので、コマンドを取りこぼさない
-    // (未使用時はコマンドキューも空なので溜まらない)。
-    // 合成を止めている間 getSample() は lastSample(初期値0)を返すため無音。
     if (ym2413_enabled || fmGen->touched()) {
       fmGen->fillBuffer();
     }
@@ -1868,16 +1751,6 @@ void updateAllSound() {
 }
 
 #ifdef USE_SERIAL_DEBUG
-// ---------------------------------------------------------------------------
-// コア1の内訳計測
-//   GPIO2は「コア1が忙しい合計時間」しか見せないので、その中身を
-//   サウンド / 転送 / 入力 に分けて1秒ごとの累計(us)で出す。
-//   1,000,000us が1コア分なので、値をそのまま「%」として読める。
-//   ★60FPS化の判断に直結する点:
-//     blit はフレームごとなので 60FPS化で「倍」になる。
-//     snd はフレームレートと無関係なので変わらない。
-//     したがって blit が支配的ならコア1が60FPSの新たな律速になる。
-// ---------------------------------------------------------------------------
 static int64_t c1_snd = 0, c1_blit = 0, c1_inp = 0;
 static int64_t c1_winStart = 0;
 static int c1_iter = 0, c1_frames = 0;
@@ -1906,8 +1779,6 @@ void loop() {
     digitalWrite(2, HIGH);
 #endif
     if (mk3_direct) {
-      // 画面はコア0(renderSingleLine)がビューポートへ書き込み済み。
-      // ステータス表示などのcanvasプリミティブだけ処理する。
       DisplayController.processPrimitives();
     } else {
       smsVdp->flip_buffer();
@@ -1933,16 +1804,10 @@ void loop() {
     updateLoadStats(&loopStatMinUs, &loopStatMaxUs, &loopStatSumUs, &loopStatCount, &loopStatLastPrintUs, "LOOP", esp_timer_get_time() - loopProfStart);
 #endif
   } else {
-    // 【最適化】30回に29回はここに来る。以前は何もせず即座に再ループしていたため
-    // コア1が常時100%稼働し、フラッシュ命令フェッチとPSRAMアクセスで
-    // コア0(cpuTask)のキャッシュを奪っていた。リングは BUFFER_SIZE=512 サンプル
-    // / 16384Hz = 約31msぶんあるので、1tick(1ms)眠ってもアンダーランしない。
-    // 60FPSを達成している自作MSX実装も loop()末尾で delay(1) している。
     vTaskDelay(1);
   }
 
 #ifdef USE_SERIAL_DEBUG
-  // 1秒ごとに累計を吐く。1,000,000us = コア1まるごと1個ぶん。
   {
     int64_t now = esp_timer_get_time();
     if (now - c1_winStart >= 1000000) {

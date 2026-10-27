@@ -5,24 +5,21 @@
 #define SCREEN_W 256
 #define SCREEN_H 192
 
-// ── ステートセーブ用構造体 ──────────────────────────────────────────────────
 struct VDPState {
-    uint8_t  vram[16384];   // VRAM（PSRAMに保存するため全量含む）
-    uint8_t  reg[16];       // VDPレジスタ
-    uint8_t  cram[32];      // カラーRAM
-    uint16_t vaddr;         // VRAMアドレスカウンタ
-    uint8_t  vcode;         // コードビット（アドレスラッチ上位2bit）
-    uint8_t  vlatch;        // コントロール1バイト目ラッチ
-    bool     vcmd;          // コントロールコマンド待ちフラグ
-    uint8_t  rbuf;          // 読み出しプリフェッチバッファ
-    uint8_t  linecnt;       // ラインカウンタ（H-INT用）
-    uint8_t  status;        // ステータスレジスタ
-    bool     vint_pending;  // V-INT 保留
-    bool     hint_pending;  // H-INT 保留
-    uint8_t  read_mode;     // リードモード
+    uint8_t  vram[16384];
+    uint8_t  reg[16];
+    uint8_t  cram[32];
+    uint16_t vaddr;
+    uint8_t  vcode;
+    uint8_t  vlatch;
+    bool     vcmd;
+    uint8_t  rbuf;
+    uint8_t  linecnt;
+    uint8_t  status;
+    bool     vint_pending;
+    bool     hint_pending;
+    uint8_t  read_mode;
 };
-// 合計サイズ: 16384 + 16 + 32 + 小変数 ≒ 16.4 KB（PSRAM想定）
-// ────────────────────────────────────────────────────────────────────────────
 
 class VDP {
 public:
@@ -34,20 +31,15 @@ public:
     void writeControl(uint8_t v);
     uint8_t readControl();
 
-    // ── ステートセーブ／ロード ──
     void saveState(VDPState& s) const;
     void loadState(const VDPState& s);
 
     void renderSingleLine(int y);
     void scanlineCheck(int y);
-    // MODE4の描画先をFabGLビューポートに切り替える。rows[y] は画面上の
-    // 描画開始位置(左端オフセット込み)で、4バイト境界であること。
-    // syncBits は createRawPixel(黒) の値(上位2bitだけ使う)。
     void setDirectOutput(uint8_t **rows, uint8_t syncBits);
-    
+
     void transferFrameToDisplay();
 
-    // ── H-INT / V-INT ──
     bool     vint_pending_;
     bool     hint_pending_;
     bool     irqPending() const {
@@ -55,7 +47,6 @@ public:
             || (hint_pending_ && (reg_[0] & 0x10));
     }
 
-    // ── レンダリング関数群 ──
     inline uint32_t expand_bits_to_color(uint8_t nibble, uint8_t color);
     inline uint32_t expand_mag_bits_to_color(uint8_t two_bits, uint8_t color);
     void tms9918a_render_slice(int y, uint8_t *sprat, uint16_t bits, unsigned int width);
@@ -75,29 +66,22 @@ public:
     int tms9918a_irq_pending();
     void tms9918a_apply_cram();
     void flip_buffer();
-    
-    // ── ダブルバッファ関係 ──
-    // 【重要】vint_pending_ / hint_pending_ が bool でオフセット0,1を占めるため、
-    // 何もしないと rasterbuffer0 はオフセット2、つまり4バイト境界に乗らない。
-    // ラスタを32bit単位で読み書きする最適化(ピクセルのLUT化、memcpyのワード
-    // パス化)が全て使えなくなるので、明示的に整列させておく。
+
     uint8_t  rasterbuffer0[SCREEN_W * SCREEN_H] __attribute__((aligned(4)));
     uint8_t  rasterbuffer1[SCREEN_W * SCREEN_H] __attribute__((aligned(4)));
     uint8_t* active_raster;
     uint8_t* visible_raster;
-    
-    // ── メモリ類（DRAM_ATTR グローバルへのポインタ） ──
-    uint8_t* vram;     // 16384 bytes – 外部 DRAM_ATTR バッファを指す
-    uint8_t* cram;     // 32 bytes
-    uint8_t* cramRGB;  // 32 bytes
-    uint8_t* reg_;     // 16 bytes
+
+    uint8_t* vram;
+    uint8_t* cram;
+    uint8_t* cramRGB;
+    uint8_t* reg_;
     uint8_t  sprite_line_count[192];
     uint8_t  sprite_line_list[192][32];
     bool     limit_sprites = true;
     uint16_t memmask = 0x3FFF;
     uint8_t  read_mode;
-    
-    // 内部状態レジスタ
+
     uint16_t vaddr_;
     uint8_t  vcode_;
     uint8_t  vlatch_;
@@ -105,21 +89,20 @@ public:
     uint8_t  rbuf_;
     uint8_t  linecnt_;
     uint8_t  status_;
-    uint8_t  vscroll_;     // 表示中に使う縦スクロール値。R#9 は表示期間の外(192ライン目以降)でだけ取り込む
+    uint8_t  vscroll_;
 
 private:
     void renderLine(int y, uint8_t* line_buf);
-    int  renderLineScratch(int y);                        // 戻り値 fine(0〜7)
-    int  renderBG(int y, uint8_t* px, uint8_t* bginfo);   // 戻り値 fine(0〜7)
+    int  renderLineScratch(int y);
+    int  renderBG(int y, uint8_t* px, uint8_t* bginfo);
     void renderSprites(int y, uint8_t* px, uint8_t* bginfo);
 
-    // インラインヘルパー関数群
     uint16_t ntBase() const { return (reg_[2] & 0x0E) << 10; }
     uint16_t satBase() const { return (reg_[5] & 0x7E) << 7; }
     uint16_t sprBase() const { return (reg_[6] & 0x04) << 11; }
-    
+
     void setCRAM(uint8_t addr, uint8_t val) {
         cram[addr & 0x1F] = val;
-        cramRGB[addr & 0x1F] = val; 
+        cramRGB[addr & 0x1F] = val;
     }
 };
