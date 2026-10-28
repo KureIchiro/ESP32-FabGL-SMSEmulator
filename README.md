@@ -12,7 +12,7 @@ An emulator for the SEGA MarkIII / Master System using ESP32 and the **FabGL** l
 ## 📝 Overview
 
 The goal of this project is to build a "comfortable SEGA MarkIII environment" within the resource constraints of the ESP32.
-- **Target Frame Rate**: Approx. 30 FPS
+- **Target Frame Rate**: Approx. 60 FPS
 - **Audio Limitations**: 
   - The reproducibility of the FM sound source (especially the rhythm section) is low due to FabGL's sampling rate constraints.
   - Titles using PSG sampling playback also suffer from lower audio fidelity for the same reason.
@@ -129,7 +129,7 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 ## 📝 概要
 
 本プロジェクトは、ESP32のリソース制約の中で「快適に動作するセガ・マークIII環境」を構築することを目的としています。
-- **ターゲットフレームレート**: 約30FPS
+- **ターゲットフレームレート**: 約60FPS
 - **サウンドに関する注意点**: 
   - FM音源（特にリズムセクション）は、FabGLのサンプリングレートの制約により再現度が低くなっています。
   - PSGでサンプリング再生を行っているタイトルについても、同様の理由で再現度が低くなります。
