@@ -12,8 +12,9 @@ An emulator for the SEGA MarkIII / Master System using ESP32 and the **FabGL** l
 ## 📝 Overview
 
 The goal of this project is to build a "comfortable SEGA MarkIII environment" within the resource constraints of the ESP32.
-- **Target Frame Rate**: Approx. 60 FPS
-- **Audio Limitations**: 
+- **Frame Rate**: 60 FPS (59.94 Hz, every frame rendered)
+- **Sound**: PSG and the FM Sound Unit (YM2413).
+- **Audio Limitations**:
   - The reproducibility of the FM sound source (especially the rhythm section) is low due to FabGL's sampling rate constraints.
   - Titles using PSG sampling playback also suffer from lower audio fidelity for the same reason.
 
@@ -28,7 +29,7 @@ The goal of this project is to build a "comfortable SEGA MarkIII environment" wi
 
 Deep gratitude to the authors who published these excellent foundations as open-source.
 
-- **Graphics/Audio Engine**: Uses [FabGL](https://github.com) by Fabrizio Di Vittorio.
+- **Graphics/Audio Engine**: Uses [FabGL](https://github.com/fdivitto/FabGL) by Fabrizio Di Vittorio.
 - **Z80 CPU Core**: Modified based on the work by Marat Fayzullin.
 - **VDP Section**: Modified based on the TMS9918A core originally by David Latham and maintained by Marat Fayzullin.
 - **OPLL (YM2413) Sound Core**: Modified based on the work by Mitsutaka Okazaki.
@@ -46,14 +47,16 @@ Each core within this software complies with the policies of FabGL, Marat Fayzul
 
 ### Recommended Arduino IDE Settings
 - **Board**: `ESP32 Dev Module`
-- **PSRAM**: `"Enabled"` (**Required**)
+- **PSRAM**: `"Enabled"` (required). 
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` or similar
+
+Disabling PSRAM can improve performance by about 30% in some cases, but this project already achieves 60 FPS with PSRAM enabled, so disabling it offers no practical benefit here. Keep PSRAM enabled.
 
 ---
 
 ## 📂 SD Card Structure & Setup
 
-Create a `/SMS` folder in the root of your MicroSD card and put the game ROMs in `/SMS/ROM` (MSX1 uses `/MSX1`, MSX2 `/MSX2`, PC-8801 `/PC88` and X1 `/X1`, so one card can hold every machine).
+Create a `/SMS` folder in the root of your MicroSD card and put the game ROMs in `/SMS/ROM` (MSX1 uses `/MSX1`, MSX2 `/MSX2`, PC-8801 `/PC88`, X1 `/X1` and MZ-2500 `/MZ25`, so one card can hold every machine).
 The `SAVE` folder is created automatically when the first save is written.
 
 ```text
@@ -65,13 +68,21 @@ The `SAVE` folder is created automatically when the first save is written.
 
 ---
 
+## 🚀 ROM Selector
+
+At power-on the ROM selector lists the `.sms` / `.sg` files in `/SMS/ROM`.
+- **Keyboard**: Up/Down = select, Enter (or Z / X) = start the ROM or open the folder. Folders are shown as "name/" in **light blue**, the selected item in **yellow**; choose ".." to go up.
+- **1P controller**: Up/Down = select, button 1 or 2 = start / open.
+
+---
+
 ## 🕹️ Operations Guide (Function Keys)
 
 Please modify the source code to fit your keyboard layout if localization (e.g., key mapping) is required.
 
 ### 1. System Operations
 - **`[F12]`** : Pause / Resume (Reproduces the **PAUSE button** on the MarkIII console)
-- **`[Shift] + [F12]`** : Hardware Reset (Reboots the ESP32)
+- **`[Shift] + [F12]`** : Hardware Reset (Reboots the ESP32 and returns to the ROM selector)
 
 ### 2. SRAM Save & Load
 Titles supporting SRAM (battery backup) keep it on the SD card (`/SMS/ROM/SAVE/<rom name>_0.sav` etc.).
@@ -79,7 +90,21 @@ Titles supporting SRAM (battery backup) keep it on the SD card (`/SMS/ROM/SAVE/<
 - **Automatic (slot 0, works like the battery)**: slot 0 is loaded automatically when the game starts, and saved automatically 2 seconds after the game writes to SRAM. Just save inside the game as on the real machine.
 - **Manual copies (slots 1 / 2)**: `[Shift] + [F10]` / `[Shift] + [F9]` save SRAM to slot 1 / 2; `[F10]` / `[F9]` load it.
 - `[F11]` / `[Shift] + [F11]` load / save slot 0 by hand.
-- Loading while a game is running replaces the cartridge RAM immediately. Some games (such as Ys) also use this RAM as work memory, so it is safest to load from the title screen and then use the game's own load menu.
+- Loading while a game is running replaces the cartridge RAM immediately. Some games also use this RAM as work memory, so it is safest to load from the title screen and then use the game's own load menu.
+
+### 3. State Save & Load
+Saves the whole machine state (CPU, RAM, VDP, sound) at any point of the game.
+
+- **PSRAM (temporary, lost at power-off)**: `[Shift] + [F6]` = save, `[F6]` = load.
+- **SD card (permanent)**: `[Shift] + [F5]` writes the state in PSRAM to `/SMS/ROM/SAVE/<rom name>_st.sav`; `[F5]` reads it back into PSRAM.
+- To resume from the SD card, press `[F5]` and then `[F6]`.
+
+### 4. Other Functions
+- **`[F8]`** : PSG→SCC on / off (adds SCC-style waveforms played with the PSG's pitch and volume, same as the MSX emulators)
+- **`[Shift] + [F8]`** : Removes / restores the horizontal sprite limit (8 per line). Removing it reduces flicker in some games.
+
+### 5. Keyboard as Controller 1
+While the 1P controller is not pressed, the keyboard works as controller 1: cursor keys = directions, **Z** = button 1, **X** = button 2.
 
 ---
 
@@ -88,7 +113,7 @@ Titles supporting SRAM (battery backup) keep it on the SD card (`/SMS/ROM/SAVE/<
 This project supports Atari-specification (D-Sub 9-pin) controller signals input via the ESP32 serial port (UART).
 
 > 💡 **Joystick Converter Compatibility**
-> 
+>
 > You can reuse the **Atari-to-Serial Joystick Converter hardware/firmware** already published in the MSX1 emulator section of this repository.
 
 ### 1. Connection & Communication Specs
@@ -97,6 +122,7 @@ This project supports Atari-specification (D-Sub 9-pin) controller signals input
 - **Connection Port**: `IO39`
 - **Update Interval**: 16.67ms (Approx. 59.94Hz)
 - **Supported Hardware**: MarkIII Joystick Ports 1 & 2 (1P / 2P)
+- **Button 3** of either controller works as the console's **PAUSE button**. Pressing **buttons 1, 2 and 3 together** resets (reboots the ESP32).
 
 ### 2. Data Format from External Converter
 Receives the following **2-byte binary data** via serial and reflects it onto the MarkIII joystick state in real-time. Data is expected to be transmitted continuously in the order of "1P (Port A) data → 2P (Port B) data".
@@ -105,7 +131,7 @@ Receives the following **2-byte binary data** via serial and reflects it onto th
 | Bit | Function | Description |
 | :---: | :--- | :--- |
 | **b7** | Port ID | `0` = Port A (1P) / `1` = Port B (2P) |
-| **b6** | Button 3 | `0`: ON / `1`: OFF (**Active Low**) |
+| **b6** | Button 3 | `0`: ON / `1`: OFF (**Active Low**). PAUSE button |
 | **b5** | Button 2 | `0`: ON / `1`: OFF |
 | **b4** | Button 1 | `0`: ON / `1`: OFF |
 | **b3** | Right | `0`: ON / `1`: OFF |
@@ -129,8 +155,9 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 ## 📝 概要
 
 本プロジェクトは、ESP32のリソース制約の中で「快適に動作するセガ・マークIII環境」を構築することを目的としています。
-- **ターゲットフレームレート**: 約60FPS
-- **サウンドに関する注意点**: 
+- **フレームレート**: 60FPS（59.94Hz、全フレーム描画）
+- **サウンド**: PSG と FMサウンドユニット（YM2413）。
+- **サウンドに関する注意点**:
   - FM音源（特にリズムセクション）は、FabGLのサンプリングレートの制約により再現度が低くなっています。
   - PSGでサンプリング再生を行っているタイトルについても、同様の理由で再現度が低くなります。
 
@@ -145,7 +172,7 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 
 素晴らしい開発基盤をオープンソースとして公開されている諸氏に、深く感謝の意を表します。
 
-- **グラフィック/オーディオエンジン**: Fabrizio Di Vittorio氏による [FabGL](https://github.com) を使用。
+- **グラフィック/オーディオエンジン**: Fabrizio Di Vittorio氏による [FabGL](https://github.com/fdivitto/FabGL) を使用。
 - **Z80 CPUコア**: Marat Fayzullin氏のコードをベースに改変。
 - **VDPセクション**: David Latham氏のTMS9918Aコアをベースに、Marat Fayzullin氏が調整した実装を改変。
 - **OPLL (YM2413) 音源コア**: Mitsutaka Okazaki氏によるコードをベースに改変。
@@ -163,14 +190,16 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 
 ### Arduino IDE 推奨設定
 - **開発ボード**: `ESP32 Dev Module`
-- **PSRAM**: `"Enabled"` (**必須**)
+- **PSRAM**: `"Enabled"`（必須）。
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` またはそれに準ずるもの
+
+PSRAMを無効にすると約30%高速化する場合がありますが、本プロジェクトはPSRAM有効のままで60FPSを達成しているため、無効にする実用上のメリットはありません。PSRAMは有効のままご使用ください。
 
 ---
 
 ## 📂 SDカードの構成とセットアップ
 
-MicroSDカードのルートに `/SMS` フォルダを作り、ゲームROMを `/SMS/ROM` に入れてください（MSX1 は `/MSX1`、MSX2 は `/MSX2`、PC-8801 は `/PC88`、X1 は `/X1` なので、1枚のカードに全機種を入れられます）。
+MicroSDカードのルートに `/SMS` フォルダを作り、ゲームROMを `/SMS/ROM` に入れてください（MSX1 は `/MSX1`、MSX2 は `/MSX2`、PC-8801 は `/PC88`、X1 は `/X1`、MZ-2500 は `/MZ25` なので、1枚のカードに全機種を入れられます）。
 `SAVE` フォルダは、最初にセーブしたときに自動で作られます。
 
 ```text
@@ -182,13 +211,21 @@ MicroSDカードのルートに `/SMS` フォルダを作り、ゲームROMを `
 
 ---
 
+## 🚀 ROMの選択
+
+電源を入れると、`/SMS/ROM` の `.sms` / `.sg` ファイルの一覧が出ます。
+- **キーボード**: ↑↓ = 選択、Enter（または Z / X）= そのROMで起動、またはフォルダに入る。フォルダは「名前/」で **水色**、選んでいる項目は **黄色** で表示します。「..」で1つ上へ戻ります。
+- **1P のコントローラ**: ↑↓ = 選択、ボタン1 か 2 = 起動 / フォルダに入る。
+
+---
+
 ## 🕹️ 拡張機能操作ガイド（ファンクションキー）
 
 キーボード配列等のローカライズに関しては、各自のキーボード環境に合わせて必要に応じてソースコードを修正してください。
 
 ### 1. システム操作
 - **`[F12]`** : 一時停止 (Pause) / 再開（マークIII本体の **PAUSEボタン** を再現）
-- **`[Shift] + [F12]`** : ハードウェアリセット (ESP32を再起動します)
+- **`[Shift] + [F12]`** : ハードウェアリセット（ESP32を再起動して、ROMの選択に戻ります）
 
 ### 2. SRAMセーブ＆ロード
 SRAM（電池バックアップ）に対応したタイトルは、その内容をSDカード（`/SMS/ROM/SAVE/<ROM名>_0.sav` など）に保存します。
@@ -196,7 +233,21 @@ SRAM（電池バックアップ）に対応したタイトルは、その内容�
 - **自動（スロット0。電池の代わり）**: ゲームを始めるときにスロット0を自動で読み込み、ゲームがSRAMを書き換えたら2秒後に自動で保存します。実機と同じく、ゲームの中でセーブするだけで残ります。
 - **手動の控え（スロット1・2）**: `[Shift] + [F10]` / `[Shift] + [F9]` でスロット1 / 2 に保存、`[F10]` / `[F9]` で読み込みます。
 - `[F11]` / `[Shift] + [F11]` はスロット0を手動で読み込み / 保存します。
-- 遊んでいる途中で読み込むと、カートリッジのRAMがすぐに入れ替わります。イースのようにこのRAMを作業用にも使うゲームがあるので、タイトル画面で読み込んでからゲームのロードを使うのが安全です。
+- 遊んでいる途中で読み込むと、カートリッジのRAMがすぐに入れ替わります。このRAMを作業用にも使うゲームがあるので、タイトル画面で読み込んでからゲームのロードを使うのが安全です。
+
+### 3. ステートセーブ＆ロード
+ゲームのどこでも、本体の状態（CPU・RAM・VDP・音源）をまるごと保存します。
+
+- **PSRAM（一時保存。電源を切ると消えます）**: `[Shift] + [F6]` = 保存、`[F6]` = 読み込み。
+- **SDカード（電源を切っても残ります）**: `[Shift] + [F5]` で PSRAM のステートを `/SMS/ROM/SAVE/<ROM名>_st.sav` に書き出し、`[F5]` で PSRAM に読み込みます。
+- SDカードから再開するときは、`[F5]` のあと `[F6]` を押してください。
+
+### 4. その他の機能
+- **`[F8]`** : PSG→SCC の入/切（PSG の音程・音量で SCC 風の波形を重ねて鳴らす。MSX 版と同じ）
+- **`[Shift] + [F8]`** : スプライトの横の枚数制限（1ライン8個）を外す / 戻す。ちらつきが減るゲームがあります。
+
+### 5. キーボードでコントローラ1を操作
+1P のコントローラを押していないときは、キーボードがコントローラ1になります：カーソルキー = 方向、**Z** = ボタン1、**X** = ボタン2。
 
 ---
 
@@ -205,7 +256,7 @@ SRAM（電池バックアップ）に対応したタイトルは、その内容�
 本プロジェクトは、ESP32のシリアルポート（UART）経由で入力された「アタリ仕様（D-Sub 9ピン）コントローラー」の信号をサポートしています。
 
 > 💡 **ジョイスティックコンバータの互換性について**
-> 
+>
 > 外部コントローラーの接続に使用する **アタリ仕様→シリアル変換器のハードウェアおよびファームウェア** は、本リポジトリ内のMSX1エミュレータ部分で公開しているものがそのまま流用可能です。
 
 ### 1. 接続・通信仕様
@@ -214,6 +265,7 @@ SRAM（電池バックアップ）に対応したタイトルは、その内容�
 - **接続ポート**: `IO39`
 - **更新周期**: 16.67ms (約59.94Hz)
 - **対応ハード**: マークIII ジョイスティックポート1・2（1P / 2P）
+- どちらのコントローラも **ボタン3** が本体の **PAUSEボタン** になります。**ボタン1・2・3 を同時に押す** とリセット（ESP32 を再起動）します。
 
 ### 2. 外部変換器からのデータフォーマット
 シリアル経由で以下の **2バイトバイナリデータ** を受信し、マークIIIのジョイスティック状態にリアルタイムに反映します。データは「1P（ポートA）データ → 2P（ポートB）データ」の順で連続して送信されることを想定しています。
@@ -222,7 +274,7 @@ SRAM（電池バックアップ）に対応したタイトルは、その内容�
 | Bit | 機能 | 内容 |
 | :---: | :--- | :--- |
 | **b7** | ポート判別ID | `0` = Port A (1P) ／ `1` = Port B (2P) |
-| **b6** | ボタン3 | `0`: ON ／ `1`: OFF (**Active Low**) |
+| **b6** | ボタン3 | `0`: ON ／ `1`: OFF (**Active Low**)。PAUSEボタン |
 | **b5** | ボタン2 | `0`: ON ／ `1`: OFF |
 | **b4** | ボタン1 | `0`: ON ／ `1`: OFF |
 | **b3** | 右 (Right) | `0`: ON ／ `1`: OFF |

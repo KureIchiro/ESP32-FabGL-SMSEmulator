@@ -15,7 +15,7 @@
  *  - Library: FabGL v1.0.9
  *
  * [ Recommended Arduino IDE Settings ]
- *  - PSRAM: "Enabled"
+ *  - PSRAM: "Enabled" (required on ESP32 revision 0-2. On revision 3 or later "Disabled" also works and is ~30% faster; see README)
  *  - Partition Scheme: "Default 4MB with SPIFFS" or similar
  *  - ESP32 Dev Module
  *
@@ -50,7 +50,7 @@
  *  - 使用ライブラリ: FabGL v1.0.9
  *
  * 【Arduino IDE 推奨設定】
- *  - PSRAM: "Enabled"
+ *  - PSRAM: "Enabled"(ESP32 のリビジョン 0〜2 では必須。リビジョン 3 以降なら "Disabled" でもよく、約 3 割速い。README 参照)
  *  - Partition Scheme: "Default 4MB with SPIFFS" 等
  *  - ESP32 Dev Module
  *
@@ -78,12 +78,23 @@
 #include <vector>
 #include "soc/rtc_wdt.h"
 #include "esp_task_wdt.h"
+#ifndef BOARD_HAS_PSRAM
+#include "esp32/spiram.h"
+#include "esp_heap_caps.h"
+#define ps_malloc(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#endif
+#if defined(BOARD_HAS_PSRAM) && !defined(EMU_PSRAM_NO_ERRATA_FIX)
+#define psramFixMissing() false
+#else
+#define psramFixMissing() (ESP.getChipRevision() < 3)
+#endif
 #include "Z80.h"
 #include "vdp.h"
 #include "emu2413.h"
 
 #define SD_SCLK 14
 #define SD_MISO 2
+//#define SD_MISO 35  // ORANGE ESPer
 #define SD_MOSI 12
 #define SD_CS 13
 
@@ -1149,8 +1160,10 @@ void updateKeyboard() {
   }
 }
 
-void IRAM_ATTR updateController() {
-  sms_joy_state_a = sms_joy_state_b = 0x3F;
+void IRAM_ATTR updateController(bool hold) {
+  static uint8_t last_a = 0x3F, last_b = 0x3F;
+  sms_joy_state_a = hold ? last_a : 0x3F;
+  sms_joy_state_b = hold ? last_b : 0x3F;
 
   static bool btn3_held_a = false;
   static bool btn3_held_b = false;
@@ -1183,6 +1196,8 @@ void IRAM_ATTR updateController() {
       }
     }
   }
+  last_a = sms_joy_state_a;
+  last_b = sms_joy_state_b;
 
   if ((sms_joy_state_a & 0x3F) == 0x3F) {
     sms_joy_state_a = kbdJoyState & 0x3F;
@@ -1455,6 +1470,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
   int64_t nextFrameTime = esp_timer_get_time();
   static uint8_t renderTiming = 0;
   bool renderFrame = false;
+  bool noWait = false, prevNoWait = false;
 
 #ifdef USE_SERIAL_DEBUG2
   Serial.printf("cpuTask started. (core=%d)\n", xPortGetCoreID());
@@ -1467,6 +1483,8 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
 #ifdef USE_SIGNAL_DEBUG
     digitalWrite(14, HIGH);
 #endif
+    updateController(prevNoWait);
+    prevNoWait = noWait;
     nextFrameTime += frameTimeUs;
     renderFrame = 1;
 
@@ -1516,6 +1534,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
 #endif
     int64_t now = esp_timer_get_time();
     int64_t waitTime = nextFrameTime - now;
+    noWait = waitTime <= 0;
 
     if (waitTime > 0) {
       if (waitTime >= 1000) {
@@ -1549,8 +1568,22 @@ void printMemoryStats() {
   Serial.println("===================================================\n");
 }
 
+#ifndef BOARD_HAS_PSRAM
+bool psramEnable() {
+  if (esp_spiram_init() != ESP_OK) return false;
+  esp_spiram_init_cache();
+  if (!esp_spiram_test()) return false;
+  if (esp_spiram_add_to_heapalloc() != ESP_OK) return false;
+  heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
+  return true;
+}
+#endif
+
 void setup() {
   Serial.begin(115200);
+#ifndef BOARD_HAS_PSRAM
+  Serial.printf("PSRAM: %s\n", psramEnable() ? "enabled by the sketch" : "init FAILED");
+#endif
   Serial1.begin(115200, SERIAL_8N1, 39, -1);
   setCpuFrequencyMhz(240);
 
@@ -1585,6 +1618,17 @@ void setup() {
   canvas->clear();
   canvas->swapBuffers();
   canvas->clear();
+  if (psramFixMissing()) {
+    Serial.printf("ESP32 revision %d needs the PSRAM errata fix: set Tools > PSRAM to \"Enabled\" and build again\n", ESP.getChipRevision());
+    char msg[48];
+    snprintf(msg, sizeof(msg), "ESP32 REV.%d NEEDS THE PSRAM BUG FIX", ESP.getChipRevision());
+    canvas->setPenColor(RGB888(255, 85, 85));
+    canvas->drawText(8, 80, msg);
+    canvas->drawText(8, 96, "TOOLS > PSRAM > \"Enabled\",");
+    canvas->drawText(8, 112, "THEN BUILD AGAIN");
+    canvas->swapBuffers();
+    while (1) delay(1000);
+  }
 
   soundGenerator.attach(&psgGen);
   for (int i = 0; i < 3; i++) {
@@ -1791,7 +1835,6 @@ void loop() {
     c1_blit += t2 - t1;
     c1_frames++;
 #endif
-    updateController();
     updateKeyboard();
     autoSaveSram();
 #ifdef USE_SERIAL_DEBUG
