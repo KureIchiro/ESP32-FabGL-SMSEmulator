@@ -50,7 +50,7 @@ Each core within this software complies with the policies of FabGL, Marat Fayzul
 - **PSRAM**: `"Enabled"` (required). 
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` or similar
 
-Disabling PSRAM can improve performance by about 30% in some cases, but this project already achieves 60 FPS with PSRAM enabled, so disabling it offers no practical benefit here. Keep PSRAM enabled.
+Disabling PSRAM invalidates software errata countermeasures, improving performance by about 30%, but this project already achieves 60 FPS with PSRAM enabled, so disabling it offers no practical benefit here.
 
 ---
 
@@ -193,7 +193,7 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 - **PSRAM**: `"Enabled"`（必須）。
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` またはそれに準ずるもの
 
-PSRAMを無効にすると約30%高速化する場合がありますが、本プロジェクトはPSRAM有効のままで60FPSを達成しているため、無効にする実用上のメリットはありません。PSRAMは有効のままご使用ください。
+PSRAMを無効にするとソフトでのエラッタ対策が無効になるため約30%の高速化になりますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。
 
 ---
 
