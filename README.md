@@ -47,10 +47,8 @@ Each core within this software complies with the policies of FabGL, Marat Fayzul
 
 ### Recommended Arduino IDE Settings
 - **Board**: `ESP32 Dev Module`
-- **PSRAM**: `"Enabled"` (required). 
+- **PSRAM**: `"Enabled"` (required). Older ESP32 chips (revision 0–2, found on many TTGO VGA32 boards) have a PSRAM bug (Espressif errata CPU-3.9), and `"Enabled"` makes the compiler add a workaround for it. On chip revision 3 or later you may choose `"Disabled"` instead: the sketch turns PSRAM on by itself and runs about 20% faster without the workaround. On an older chip a `"Disabled"` build stops at startup with a message, because it could occasionally corrupt memory. The upload log shows the revision (e.g. "Chip is ESP32-D0WDQ6 (revision 1)").
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` or similar
-
-Disabling PSRAM invalidates software errata countermeasures, improving performance by about 30%, but this project already achieves 60 FPS with PSRAM enabled, so disabling it offers no practical benefit here.
 
 ---
 
@@ -190,10 +188,8 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 
 ### Arduino IDE 推奨設定
 - **開発ボード**: `ESP32 Dev Module`
-- **PSRAM**: `"Enabled"`（必須）。
+- **PSRAM**: `"Enabled"`（必須）。古い ESP32（リビジョン 0〜2。TTGO VGA32 にも多い）には PSRAM の不具合（Espressif errata CPU-3.9）があり、`"Enabled"` にするとコンパイラがその回避策を入れます。チップがリビジョン 3 以降なら `"Disabled"` でもよく、スケッチが起動時に PSRAM を有効にし、回避策が入らないぶん約 2 割速くなります。古いチップで `"Disabled"` にしたものは、まれにメモリが壊れるため、起動時に理由を表示して止まります。リビジョンは書き込みのときのログ（「Chip is ESP32-D0WDQ6 (revision 1)」など）で分かります。
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` またはそれに準ずるもの
-
-PSRAMを無効にするとソフトでのエラッタ対策が無効になるため約30%の高速化になりますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。
 
 ---
 
