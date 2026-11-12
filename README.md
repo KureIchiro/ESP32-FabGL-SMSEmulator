@@ -47,8 +47,9 @@ Each core within this software complies with the policies of FabGL, Marat Fayzul
 
 ### Recommended Arduino IDE Settings
 - **Board**: `ESP32 Dev Module`
-- **PSRAM**: `"Enabled"` (required). Older ESP32 chips (revision 0–2, found on many TTGO VGA32 boards) have a PSRAM bug (Espressif errata CPU-3.9), and `"Enabled"` makes the compiler add a workaround for it. On chip revision 3 or later you may choose `"Disabled"` instead: the sketch turns PSRAM on by itself and runs about 20% faster without the workaround. On an older chip a `"Disabled"` build stops at startup with a message, because it could occasionally corrupt memory. The upload log shows the revision (e.g. "Chip is ESP32-D0WDQ6 (revision 1)").
+- **PSRAM** (ON = `"Enabled"`, OFF = `"Disabled"`): With PSRAM ON, a software workaround for the chip errata (Espressif errata CPU-3.9) is built in, and the speed drops by about 20%. With PSRAM OFF, the sketch enables PSRAM by itself and the software workaround is not built in. However, this causes failures unless the ESP32 is chip revision 3 or later, so on any other revision a PSRAM OFF build is made not to start. This project already reaches 60 FPS with PSRAM ON, so there is no clear benefit in turning it OFF.
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` or similar
+- **Switching machines with EmuLauncher** (optional): copy `emu_switch.h` and `partitions.csv` from the `EmuLauncher` folder into this sketch folder. The ROM selector then shows the machine to start next at the bottom (TAB or controller button C changes it), and the flash is laid out as in `partitions.csv` (the Partition Scheme setting is not used). Without the two files the sketch works on its own as before. See `EmuLauncher/README.md`.
 
 ---
 
@@ -71,6 +72,7 @@ The `SAVE` folder is created automatically when the first save is written.
 At power-on the ROM selector lists the `.sms` / `.sg` files in `/SMS/ROM`.
 - **Keyboard**: Up/Down = select, Enter (or Z / X) = start the ROM or open the folder. Folders are shown as "name/" in **light blue**, the selected item in **yellow**; choose ".." to go up.
 - **1P controller**: Up/Down = select, button 1 or 2 = start / open.
+- **Machine to start next** (only with EmuLauncher's two files, see Build Settings): TAB or controller button C (button 3) changes it; it takes effect at the next power-on or reset.
 
 ---
 
@@ -188,8 +190,9 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 
 ### Arduino IDE 推奨設定
 - **開発ボード**: `ESP32 Dev Module`
-- **PSRAM**: `"Enabled"`（必須）。古い ESP32（リビジョン 0〜2。TTGO VGA32 にも多い）には PSRAM の不具合（Espressif errata CPU-3.9）があり、`"Enabled"` にするとコンパイラがその回避策を入れます。チップがリビジョン 3 以降なら `"Disabled"` でもよく、スケッチが起動時に PSRAM を有効にし、回避策が入らないぶん約 2 割速くなります。古いチップで `"Disabled"` にしたものは、まれにメモリが壊れるため、起動時に理由を表示して止まります。リビジョンは書き込みのときのログ（「Chip is ESP32-D0WDQ6 (revision 1)」など）で分かります。
+- **PSRAM**（ON = `"Enabled"`、OFF = `"Disabled"`）: PSRAMをONにするとソフトでのエラッタ対策が入り、20%程度速度が低下します。PSRAMをOFFにするとソフトでPSRAMを有効にし、ソフトでのエラッタ対策は入りません。但し、ESP32のリビジョンが3以降でないと不具合が発生するため、それ以外のリビジョンでPSRAMをOFFにしても起動しなくしてあります。本プロジェクトではPSRAMをONにしても60FPSを達成している為、OFFにするメリットは明確にはありません。
 - **Partition Scheme**: `"Default 4MB with SPIFFS"` またはそれに準ずるもの
+- **EmuLauncher での機種の切り替え**（使うときだけ）: `EmuLauncher` のフォルダの `emu_switch.h` と `partitions.csv` を、このスケッチのフォルダにコピーします。ROM の一覧のいちばん下に次に起動する機種が出て（TAB かコントローラの C ボタンで変える）、フラッシュの分け方が `partitions.csv` のとおりになります（Partition Scheme の設定は使われません）。2 つのファイルが無ければ、今までどおり単体で動きます。詳しくは `EmuLauncher/README.md` を見てください。
 
 ---
 
@@ -212,6 +215,7 @@ MicroSDカードのルートに `/SMS` フォルダを作り、ゲームROMを `
 電源を入れると、`/SMS/ROM` の `.sms` / `.sg` ファイルの一覧が出ます。
 - **キーボード**: ↑↓ = 選択、Enter（または Z / X）= そのROMで起動、またはフォルダに入る。フォルダは「名前/」で **水色**、選んでいる項目は **黄色** で表示します。「..」で1つ上へ戻ります。
 - **1P のコントローラ**: ↑↓ = 選択、ボタン1 か 2 = 起動 / フォルダに入る。
+- **次に起動する機種**（EmuLauncher の 2 つのファイルを置いたときだけ。ビルド設定を参照）: TAB かコントローラの C ボタン（ボタン3）で変わり、電源を入れ直すかリセットすると切り替わります。
 
 ---
 

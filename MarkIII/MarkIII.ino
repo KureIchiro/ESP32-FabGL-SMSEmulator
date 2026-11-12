@@ -74,6 +74,12 @@
 #include <stdlib.h>
 #include <SPI.h>
 #include <SD.h>
+#if __has_include("emu_switch.h")
+#include "emu_switch.h"
+#define EMU_SWITCH 1
+#else
+#define EMU_SWITCH 0
+#endif
 #include <fabgl.h>
 #include <vector>
 #include "soc/rtc_wdt.h"
@@ -92,11 +98,23 @@
 #include "vdp.h"
 #include "emu2413.h"
 
+// TTGO VGA32
 #define SD_SCLK 14
 #define SD_MISO 2
-//#define SD_MISO 35  // ORANGE ESPer
 #define SD_MOSI 12
-#define SD_CS 13
+#define SD_CS   13
+
+// ORANGE ESPer
+// #define SD_SCLK 14
+// #define SD_MISO 35
+// #define SD_MOSI 12
+// #define SD_CS   13
+
+// Switch Science FabGL 
+// #define SD_SCLK 14
+// #define SD_MISO 35
+// #define SD_MOSI 2
+// #define SD_CS   133
 
 #define SD_ROOT "/SMS"
 
@@ -1250,8 +1268,24 @@ void listROMs() {
   cachedDir = current_dir;
 }
 
+#if EMU_SWITCH
+static int emuNext = -1;
+static void drawEmuNextLine() {
+  char m[48], line[64];
+  emuNextLabel(emuNext, "MARKIII", m, sizeof(m));
+  snprintf(line, sizeof(line), "TAB/C: NEXT = %s", m);
+  canvas->setBrushColor(RGB888(0, 0, 85));
+  canvas->fillRectangle(10, 190, 310, 199);
+  canvas->setPenColor(RGB888(85, 255, 255));
+  canvas->drawText(20, 191, line);
+}
+#endif
+
 void selectRomMenu() {
   current_dir = SD_ROOT "/ROM";
+#if EMU_SWITCH
+  emuNext = emuNextInit("MARKIII");
+#endif
   listROMs();
 
   if (romFiles.empty()) {
@@ -1295,6 +1329,9 @@ void selectRomMenu() {
         canvas->clear();
         canvas->setPenColor(RGB888(255, 255, 255));
         canvas->drawText(40, 5, "--- SEGA MARK3 ROM SELECTOR ---");
+#if EMU_SWITCH
+        drawEmuNextLine();
+#endif
         needClear = false;
       }
 
@@ -1354,6 +1391,13 @@ void selectRomMenu() {
         } else if (sc == 0x1A || sc == 0x22 || sc == 0x5A) {
           doSelect = true;
           keyPressed = true;
+#if EMU_SWITCH
+        } else if (sc == 0x0D) {
+          emuNext = emuNextCycle(emuNext, "MARKIII");
+          drawEmuNextLine();
+          canvas->swapBuffers();
+          keyPressed = true;
+#endif
         }
       }
       isBreak = false;
@@ -1362,11 +1406,26 @@ void selectRomMenu() {
 
     if (!keyPressed && !selected) {
       sms_joy_state_a = 0x3F;
+#if EMU_SWITCH
+      static bool joyC = false, joyCHeld = false;
+#endif
       while (Serial1.available() > 0) {
         uint8_t joy_bits = Serial1.read();
         if (joy_bits & 0x80) sms_joy_state_b = joy_bits & 0x3F;
+#if EMU_SWITCH
+        else { sms_joy_state_a = joy_bits & 0x3F; joyC = !(joy_bits & 0x40); }
+#else
         else sms_joy_state_a = joy_bits & 0x3F;
+#endif
       }
+#if EMU_SWITCH
+      if (joyC && !joyCHeld) {
+        emuNext = emuNextCycle(emuNext, "MARKIII");
+        drawEmuNextLine();
+        canvas->swapBuffers();
+      }
+      joyCHeld = joyC;
+#endif
 
       uint8_t ctrlPressed = ~sms_joy_state_a & 0x3F;
       if (ctrlPressed & (1 << 0)) {
@@ -1654,6 +1713,9 @@ void setup() {
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
 
   if (SD.begin(SD_CS, SPI, 40000000)) {
+#if EMU_SWITCH
+    emuSwitchCheck("MARKIII");
+#endif
     selectRomMenu();
 
     if (selectedRom != "") {
