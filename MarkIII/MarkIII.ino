@@ -110,11 +110,11 @@
 // #define SD_MOSI 12
 // #define SD_CS   13
 
-// Switch Science FabGL 
+// Switch Science FabGL
 // #define SD_SCLK 14
 // #define SD_MISO 35
 // #define SD_MOSI 2
-// #define SD_CS   133
+// #define SD_CS   13
 
 #define SD_ROOT "/SMS"
 
