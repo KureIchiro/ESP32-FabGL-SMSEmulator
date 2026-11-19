@@ -487,6 +487,8 @@ void IRAM_ATTR updateSCCSound() {
   }
 }
 
+#define PSG_CUTOFF 6
+
 class SN76489Generator : public fabgl::WaveformGenerator {
 private:
   const uint32_t snClock = 223721;
@@ -525,7 +527,7 @@ public:
       } else {
         if (latchedChannel < 3) {
           tonePeriod[latchedChannel] = (tonePeriod[latchedChannel] & 0x3F0) | (val & 0x0F);
-          scc_f[latchedChannel] = (tonePeriod[latchedChannel] == 0) ? 0x400 : tonePeriod[latchedChannel];
+          scc_f[latchedChannel] = (tonePeriod[latchedChannel] <= PSG_CUTOFF) ? 0 : tonePeriod[latchedChannel];
         } else {
           noiseControl = val & 0x07;
           lfsr = 0x4000;
@@ -540,7 +542,7 @@ public:
       } else {
         if (latchedChannel < 3) {
           tonePeriod[latchedChannel] = (tonePeriod[latchedChannel] & 0x00F) | ((val & 0x3F) << 4);
-          scc_f[latchedChannel] = (tonePeriod[latchedChannel] == 0) ? 0x400 : tonePeriod[latchedChannel];
+          scc_f[latchedChannel] = (tonePeriod[latchedChannel] <= PSG_CUTOFF) ? 0 : tonePeriod[latchedChannel];
         } else {
           noiseControl = val & 0x07;
           lfsr = 0x4000;
@@ -595,7 +597,7 @@ private:
       for (int i = 0; i < 3; i++) {
         toneCounter[i]--;
         if (toneCounter[i] <= 0) {
-          toneCounter[i] = (curTP[i] == 0) ? 0x400 : curTP[i];
+          toneCounter[i] = (curTP[i] == 0) ? 1 : curTP[i];
           toneOut[i] ^= 1;
         }
       }
@@ -629,10 +631,9 @@ private:
     }
 
     int32_t mixedSample = 0;
-    if (!psg2scc) {
-    if (toneOut[0]) mixedSample += volTable[curVol[0]];
-    if (toneOut[1]) mixedSample += volTable[curVol[1]];
-    if (toneOut[2]) mixedSample += volTable[curVol[2]];
+    for (int i = 0; i < 3; i++) {
+      if (curTP[i] <= PSG_CUTOFF) mixedSample += volTable[curVol[i]] >> 1;
+      else if (!psg2scc && toneOut[i]) mixedSample += volTable[curVol[i]];
     }
     if (noiseOut) mixedSample += volTable[curVol[3]];
 
@@ -1002,6 +1003,27 @@ void loadStateFromSD() {
 }
 
 uint8_t kbdJoyState = 0x3F;
+
+#define PAD_FILE SD_ROOT "/PAD.CFG"
+static const char PAD_ROW[] = "\x01PAD";
+static bool padSwap = false;
+static inline uint8_t padSwapBits(uint8_t v) {
+  return padSwap ? (uint8_t)((v & 0xCF) | ((v & 0x10) << 1) | ((v & 0x20) >> 1)) : v;
+}
+static void loadPadLayout() {
+  File f = SD.open(PAD_FILE, FILE_READ);
+  if (!f) return;
+  padSwap = f.read() == '2';
+  f.close();
+}
+static void savePadLayout() {
+  SD.remove(PAD_FILE);
+  File f = SD.open(PAD_FILE, FILE_WRITE);
+  if (!f) return;
+  f.write((uint8_t)(padSwap ? '2' : '1'));
+  f.close();
+}
+static const char *padLayoutLabel() { return padSwap ? "BUTTON 1 2 = 2 1  (ENTER: CHANGE)" : "BUTTON 1 2 = 1 2  (ENTER: CHANGE)"; }
 char msgBuf[32];
 void updateKeyboard() {
   static bool isBreak = false;
@@ -1162,12 +1184,12 @@ void updateKeyboard() {
     } else {
       switch (sc) {
         case 0x1A:
-          if (isBreak) kbdJoyState |= (1 << 4);
-          else kbdJoyState &= ~(1 << 4);
+          if (isBreak) kbdJoyState |= (padSwap ? (1 << 5) : (1 << 4));
+          else kbdJoyState &= ~(padSwap ? (1 << 5) : (1 << 4));
           break;
         case 0x22:
-          if (isBreak) kbdJoyState |= (1 << 5);
-          else kbdJoyState &= ~(1 << 5);
+          if (isBreak) kbdJoyState |= (padSwap ? (1 << 4) : (1 << 5));
+          else kbdJoyState &= ~(padSwap ? (1 << 4) : (1 << 5));
           break;
         default: break;
       }
@@ -1191,7 +1213,7 @@ void IRAM_ATTR updateController(bool hold) {
     if (!(joy_bits & 0x70)) ESP.restart();
 
     if (joy_bits & 0x80) {
-      sms_joy_state_b = joy_bits & 0x3F;
+      sms_joy_state_b = padSwapBits(joy_bits & 0x3F);
       if (!(joy_bits & 0x40)) {
         if (!btn3_held_b) {
           btn3_held_b = true;
@@ -1202,7 +1224,7 @@ void IRAM_ATTR updateController(bool hold) {
       }
 
     } else {
-      sms_joy_state_a = joy_bits & 0x3F;
+      sms_joy_state_a = padSwapBits(joy_bits & 0x3F);
 
       if (!(joy_bits & 0x40)) {
         if (!btn3_held_a) {
@@ -1240,6 +1262,8 @@ void listROMs() {
 
   if (current_dir != SD_ROOT "/ROM" && current_dir != SD_ROOT "/ROM/") {
     romFiles.push_back("..");
+  } else {
+    romFiles.push_back(PAD_ROW);
   }
 
   File dir = SD.open(current_dir.c_str());
@@ -1286,9 +1310,10 @@ void selectRomMenu() {
 #if EMU_SWITCH
   emuNext = emuNextInit("MARKIII");
 #endif
+  loadPadLayout();
   listROMs();
 
-  if (romFiles.empty()) {
+  if (romFiles.empty() || (romFiles.size() == 1 && romFiles[0] == PAD_ROW)) {
     canvas->setBrushColor(RGB888(0, 0, 85));
     canvas->clear();
     canvas->setPenColor(RGB888(255, 255, 255));
@@ -1302,10 +1327,13 @@ void selectRomMenu() {
   auto penFor = [&](int idx, bool sel) {
     const String &s = romFiles[idx];
     if (sel) canvas->setPenColor(RGB888(255, 255, 85));
+    else if (s == PAD_ROW) canvas->setPenColor(RGB888(85, 255, 85));
     else if (s == ".." || s.endsWith("/")) canvas->setPenColor(RGB888(85, 255, 255));
     else canvas->setPenColor(RGB888(255, 255, 255));
   };
-  int cursor = 0;
+  auto rowText = [&](int idx) { return romFiles[idx] == PAD_ROW ? padLayoutLabel() : romFiles[idx].c_str(); };
+  auto firstRow = [&]() { return (romFiles.size() > 1 && romFiles[0] == PAD_ROW) ? 1 : 0; };
+  int cursor = firstRow();
   int prevCursor = 0;
   int topIndex = 0;
   int prevTopIndex = -1;
@@ -1342,7 +1370,7 @@ void selectRomMenu() {
         canvas->fillRectangle(10, y, 310, y + 8);
         if (idx >= (int)romFiles.size()) continue;
         penFor(idx, idx == cursor);
-        canvas->drawText(20, y, romFiles[idx].c_str());
+        canvas->drawText(20, y, rowText(idx));
       }
       needRedrawAll = false;
     } else {
@@ -1352,7 +1380,7 @@ void selectRomMenu() {
         canvas->setBrushColor(RGB888(0, 0, 85));
         canvas->fillRectangle(10, oldY, 310, oldY + 8);
         penFor(prevCursor, false);
-        canvas->drawText(20, oldY, romFiles[prevCursor].c_str());
+        canvas->drawText(20, oldY, rowText(prevCursor));
       }
 
       int newLocalIdx = cursor - topIndex;
@@ -1361,7 +1389,7 @@ void selectRomMenu() {
         canvas->setBrushColor(RGB888(0, 0, 85));
         canvas->fillRectangle(10, newY, 310, newY + 8);
         penFor(cursor, true);
-        canvas->drawText(20, newY, romFiles[cursor].c_str());
+        canvas->drawText(20, newY, rowText(cursor));
       }
     }
 
@@ -1428,19 +1456,26 @@ void selectRomMenu() {
 #endif
 
       uint8_t ctrlPressed = ~sms_joy_state_a & 0x3F;
+      static bool selHeld = true;
+      const bool selBtn = (ctrlPressed & ((1 << 4) | (1 << 5))) != 0;
       if (ctrlPressed & (1 << 0)) {
         if (cursor > 0) cursor--;
       } else if (ctrlPressed & (1 << 1)) {
         if (cursor < (int)romFiles.size() - 1) cursor++;
-      } else if (ctrlPressed & ((1 << 4) | (1 << 5))) {
+      } else if (selBtn && !selHeld) {
         doSelect = true;
       }
+      selHeld = selBtn;
     }
 
     if (doSelect) {
       String chosen = romFiles[cursor];
 
-      if (chosen == "..") {
+      if (chosen == PAD_ROW) {
+        padSwap = !padSwap;
+        savePadLayout();
+        needRedrawAll = true;
+      } else if (chosen == "..") {
         int lastSlash = current_dir.lastIndexOf('/');
         if (lastSlash > 0) {
           current_dir = current_dir.substring(0, lastSlash);
@@ -1448,7 +1483,7 @@ void selectRomMenu() {
           current_dir = SD_ROOT "/ROM";
         }
         listROMs();
-        cursor = 0; prevCursor = 0; topIndex = 0; prevTopIndex = -1; needRedrawAll = true; needClear = true;
+        cursor = firstRow(); prevCursor = cursor; topIndex = 0; prevTopIndex = -1; needRedrawAll = true; needClear = true;
       } else if (chosen.endsWith("/")) {
         String folderName = chosen.substring(0, chosen.length() - 1);
         if (current_dir.endsWith("/")) current_dir += folderName;
