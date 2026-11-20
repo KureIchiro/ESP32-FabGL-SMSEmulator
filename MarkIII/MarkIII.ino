@@ -4,7 +4,7 @@
  *
  * [ Credits & Acknowledgments ]
  *  - Graphics/Audio Engine: FabGL by Fabrizio Di Vittorio.
- *  - Z80 CPU Core: Modified based on the work by Marat Fayzullin.
+ *  - Z80 CPU Core: z80core, written for this collection (MIT License, Copyright Kure Ichiro; z80core.c / z80core.h).
  *  - VDP Section: Modified based on the Sega VDP core originally derived from
  *                 TMS9918A by David Latham and maintained by Marat Fayzullin.
  *  - FM Sound Unit: Modified based on "emu2413" by Mitsutaka Okazaki (MIT License).
@@ -27,8 +27,8 @@
  *
  * [ Important Notes ]
  *  - This project is under development and may contain bugs or redundant code.
- *  - Subject to the license policies of FabGL, Marat Fayzullin (fMSX License),
- *    and Mitsutaka Okazaki (MIT License).
+ *  - Subject to the license policies of FabGL, Marat Fayzullin (fMSX License; the VDP section),
+ *    Mitsutaka Okazaki (MIT License) and z80core (MIT License).
  * ============================================================================
  */
 
@@ -39,7 +39,7 @@
  *
  * 【クレジットと謝辞】
  *  - グラフィック/オーディオエンジン: Fabrizio Di Vittorio氏による FabGL を使用しています。
- *  - Z80 CPUコア: Marat Fayzullin氏によるコードをベースに改変して使用しています。
+ *  - Z80 CPUコア: このシリーズのために書いた z80core を使用しています(MIT ライセンス、Copyright Kure Ichiro。z80core.c・z80core.h)。
  *  - VDPセクション: David Latham氏およびMarat Fayzullin氏のTMS9918Aコアをベースに、
  *                  セガVDP仕様へ改変・調整を加えた実装を使用しています。
  *  - FM音源ユニット: Mitsutaka Okazaki氏による「emu2413」をベースに改変して使用しています（MITライセンス）。
@@ -62,8 +62,8 @@
  *
  * 【注意事項】
  *  - 本プロジェクトは開発中であり、不具合や最適化不足なコードが含まれる場合があります。
- *  - 本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (fMSX License)、
- *    および Mitsutaka Okazaki氏 (MIT License) の各ポリシーに従います。
+ *  - 本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (fMSX License。VDP セクション)、
+ *    Mitsutaka Okazaki氏 (MIT License)、z80core (MIT License) の各ポリシーに従います。
  * ============================================================================
  */
 
@@ -94,7 +94,7 @@
 #else
 #define psramFixMissing() (ESP.getChipRevision() < 3)
 #endif
-#include "Z80.h"
+#include "z80core.h"
 #include "vdp.h"
 #include "emu2413.h"
 
@@ -124,26 +124,24 @@ extern "C" {
   int readIO(void* context, int port);
   void writeIO(void* context, int port, int val);
 
-  extern Z80 cpu;
+  extern z80_t cpu;
 
-  void WrZ80Slow(zword Addr, byte Value);
-  byte InZ80(zword Port);
-  void OutZ80(zword Port, byte Value);
-  void PatchZ80(Z80* R);
+  void WrZ80Slow(uint16_t Addr, uint8_t Value);
+  uint8_t InZ80(uint16_t Port);
+  void OutZ80(uint16_t Port, uint8_t Value);
 }
 
-Z80 cpu;
+z80_t cpu;
 
-void IRAM_ATTR WrZ80Slow(zword Addr, byte Value) {
+void IRAM_ATTR WrZ80Slow(uint16_t Addr, uint8_t Value) {
   writeByte(NULL, Addr, Value);
 }
-byte IRAM_ATTR InZ80(zword Port) {
+uint8_t IRAM_ATTR InZ80(uint16_t Port) {
   return (byte)readIO(NULL, Port);
 }
-void IRAM_ATTR OutZ80(zword Port, byte Value) {
+void IRAM_ATTR OutZ80(uint16_t Port, uint8_t Value) {
   writeIO(NULL, Port, Value);
 }
-void PatchZ80(Z80* R) {}
 
 void listROMs();
 void detectMapper(uint32_t size);
@@ -271,7 +269,7 @@ struct SaveState {
     char     magic[4];
     bool     valid;
     VDPState vdp;
-    Z80      cpu_state;
+    z80_t    cpu_state;
     uint8_t  ram[0x2000];
     uint8_t  sram_data[32768];
     uint8_t  bank_regs[3];
@@ -934,7 +932,7 @@ void saveStateToPSRAM() {
   if (!g_psram_state || !smsVdp) return;
   memcpy(g_psram_state->magic, "SMS2", 4);
   smsVdp->saveState(g_psram_state->vdp);
-  memcpy(&g_psram_state->cpu_state, &cpu, sizeof(Z80));
+  memcpy(&g_psram_state->cpu_state, &cpu, z80_state_size);
   memcpy(g_psram_state->ram,       main_ram, 0x2000);
   memcpy(g_psram_state->sram_data, cart_ram, sizeof(cart_ram));
   for (int i = 0; i < 3; i++)
@@ -956,7 +954,7 @@ void loadStateFromPSRAM() {
     return;
   }
   smsVdp->loadState(g_psram_state->vdp);
-  memcpy(&cpu,      &g_psram_state->cpu_state, sizeof(Z80));
+  memcpy(&cpu,      &g_psram_state->cpu_state, z80_state_size);
   memcpy(main_ram,  g_psram_state->ram,        0x2000);
   memcpy(cart_ram,  g_psram_state->sram_data,  sizeof(cart_ram));
   for (int i = 0; i < 3; i++)
@@ -1585,8 +1583,8 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     for (int i = 0; i < 262; ++i) {
       current_scanline = i;
 
-      ExecZ80(&cpu, CPU_CYCLE_NOWAIT);
-      if (nmiRequest) { nmiRequest = false; IntZ80(&cpu, INT_NMI); }
+      z80core_run(&cpu, CPU_CYCLE_NOWAIT);
+      if (nmiRequest) { nmiRequest = false; z80core_nmi_now(&cpu); }
 
       if (currentVideoMode == VideoMode::MODE4) {
         smsVdp->scanlineCheck(i);
@@ -1615,8 +1613,8 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
       }
 
       if ((currentVideoMode == VideoMode::MODE4 ? smsVdp->irqPending() : smsVdp->tms9918a_irq_pending())
-          && (cpu.IFF & IFF_1)) {
-        IntZ80(&cpu, 0x38);
+          && cpu.iff1) {
+        z80core_int(&cpu, 0xFF);
       }
     }
 
@@ -1844,10 +1842,8 @@ void setup() {
   memset(cart_ram, 0, sizeof(cart_ram));
   if (readSramFile(0)) Serial.println("SRAM (slot 0) loaded");
 
-  memset(&cpu, 0, sizeof(Z80));
-  ResetZ80(&cpu);
-  cpu.IPeriod = 224;
-  cpu.SPtr.W = 0xDFFF;
+  z80core_init(&cpu);
+  cpu.sp.w = 0xDFFF;
 
   printMemoryStats();
 

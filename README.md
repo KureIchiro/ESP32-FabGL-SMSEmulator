@@ -30,12 +30,12 @@ The goal of this project is to build a "comfortable SEGA MarkIII environment" wi
 Deep gratitude to the authors who published these excellent foundations as open-source.
 
 - **Graphics/Audio Engine**: Uses [FabGL](https://github.com/fdivitto/FabGL) by Fabrizio Di Vittorio.
-- **Z80 CPU Core**: Modified based on the work by Marat Fayzullin.
+- **Z80 CPU Core**: z80core, written for this collection (MIT License, Copyright Kure Ichiro; `z80core.c` / `z80core.h`).
 - **VDP Section**: Modified based on the TMS9918A core originally by David Latham and maintained by Marat Fayzullin.
 - **OPLL (YM2413) Sound Core**: Modified based on the work by Mitsutaka Okazaki.
 
 ### 📜 Core Licenses
-Each core within this software complies with the policies of FabGL, Marat Fayzullin (**fMSX License**), and Mitsutaka Okazaki (**MIT License / Free License**).
+Each core within this software complies with the policies of FabGL, Marat Fayzullin (**fMSX License**; the VDP section), and Mitsutaka Okazaki (**MIT License / Free License**). The Z80 core (z80core) is under the **MIT License**.
 
 ---
 
@@ -73,6 +73,7 @@ The `SAVE` folder is created automatically when the first save is written.
 At power-on the ROM selector lists the `.sms` / `.sg` files in `/SMS/ROM`.
 - **Keyboard**: Up/Down = select, Enter (or Z / X) = start the ROM or open the folder. Folders are shown as "name/" in **light blue**, the selected item in **yellow**; choose ".." to go up.
 - **1P controller**: Up/Down = select, button 1 or 2 = start / open.
+- **Button layout**: each Enter (or button 1 / 2) on the top row of the list (BUTTON 1 2 = …) swaps buttons 1 and 2 of both controllers and the keyboard Z / X. It is saved to `/SMS/PAD.CFG` on the SD card.
 - **Machine to start next** (only with EmuLauncher's two files, see Build Settings): TAB or controller button C (button 3) changes it; it takes effect at the next power-on or reset.
 
 ---
@@ -174,12 +175,12 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 素晴らしい開発基盤をオープンソースとして公開されている諸氏に、深く感謝の意を表します。
 
 - **グラフィック/オーディオエンジン**: Fabrizio Di Vittorio氏による [FabGL](https://github.com/fdivitto/FabGL) を使用。
-- **Z80 CPUコア**: Marat Fayzullin氏のコードをベースに改変。
+- **Z80 CPUコア**: このシリーズのために書いた z80core（MIT ライセンス、Copyright Kure Ichiro。`z80core.c`・`z80core.h`）。
 - **VDPセクション**: David Latham氏のTMS9918Aコアをベースに、Marat Fayzullin氏が調整した実装を改変。
 - **OPLL (YM2413) 音源コア**: Mitsutaka Okazaki氏によるコードをベースに改変。
 
 ### 📜 各コアのライセンスについて
-本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (**fMSX License**), および Mitsutaka Okazaki氏 (**MITライセンス / フリーライセンス**) の各ポリシーに従います。
+本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (**fMSX License**。VDP セクション), および Mitsutaka Okazaki氏 (**MITライセンス / フリーライセンス**) の各ポリシーに従います。Z80 コア（z80core）は **MIT ライセンス**です。
 
 ---
 
@@ -217,6 +218,7 @@ MicroSDカードのルートに `/SMS` フォルダを作り、ゲームROMを `
 電源を入れると、`/SMS/ROM` の `.sms` / `.sg` ファイルの一覧が出ます。
 - **キーボード**: ↑↓ = 選択、Enter（または Z / X）= そのROMで起動、またはフォルダに入る。フォルダは「名前/」で **水色**、選んでいる項目は **黄色** で表示します。「..」で1つ上へ戻ります。
 - **1P のコントローラ**: ↑↓ = 選択、ボタン1 か 2 = 起動 / フォルダに入る。
+- **ボタンの配置**: 一覧のいちばん上の行(BUTTON 1 2 = …)で Enter(またはボタン1 か 2)を押すたびに、両方のコントローラのボタン1・2 とキーボードの Z / X が入れ替わります。SD の `/SMS/PAD.CFG` に保存されます。
 - **次に起動する機種**（EmuLauncher の 2 つのファイルを置いたときだけ。ビルド設定を参照）: TAB かコントローラの C ボタン（ボタン3）で変わり、電源を入れ直すかリセットすると切り替わります。
 
 ---
