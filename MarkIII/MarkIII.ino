@@ -1297,7 +1297,7 @@ static void drawEmuNextLine() {
   emuNextLabel(emuNext, "MARKIII", m, sizeof(m));
   snprintf(line, sizeof(line), "TAB/C: NEXT = %s", m);
   canvas->setBrushColor(RGB888(0, 0, 85));
-  canvas->fillRectangle(10, 190, 310, 199);
+  canvas->fillRectangle(10, 190, 319, 199);
   canvas->setPenColor(RGB888(85, 255, 255));
   canvas->drawText(20, 191, line);
 }
