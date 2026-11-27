@@ -13,9 +13,9 @@ An emulator for the SEGA MarkIII / Master System using ESP32 and the **FabGL** l
 
 The goal of this project is to build a "comfortable SEGA MarkIII environment" within the resource constraints of the ESP32.
 - **Frame Rate**: 60 FPS (59.94 Hz, every frame rendered)
-- **Sound**: PSG and the FM Sound Unit (YM2413).
+- **Sound**: PSG and the FM Sound Unit (YM2413). Output rate 32768 Hz (`SOUND_RATE` near the top of `MarkIII.ino`; 16384 = the FabGL default used before).
 - **Audio Limitations**:
-  - The reproducibility of the FM sound source (especially the rhythm section) is low due to FabGL's sampling rate constraints.
+  - The FM sound source (YM2413) is computed once per output sample without band limiting, so its high frequencies (especially the rhythm section) differ from the real chip.
   - Titles using PSG sampling playback also suffer from lower audio fidelity for the same reason.
 
 > ⚠️ **Notice Regarding Development & Licenses**
@@ -158,9 +158,9 @@ ESP32と**FabGL**ライブラリを使用した、セガ・マークIII（Master
 
 本プロジェクトは、ESP32のリソース制約の中で「快適に動作するセガ・マークIII環境」を構築することを目的としています。
 - **フレームレート**: 60FPS（59.94Hz、全フレーム描画）
-- **サウンド**: PSG と FMサウンドユニット（YM2413）。
+- **サウンド**: PSG と FMサウンドユニット（YM2413）。出力は 32768Hz（`MarkIII.ino` の先頭近くの `SOUND_RATE`。16384 にすると以前の FabGL の標準と同じ）。
 - **サウンドに関する注意点**:
-  - FM音源（特にリズムセクション）は、FabGLのサンプリングレートの制約により再現度が低くなっています。
+  - FM音源（YM2413）は出力の 1 サンプルごとに 1 回、帯域制限なしで作るため、高い音（特にリズムセクション）は実機と違います。
   - PSGでサンプリング再生を行っているタイトルについても、同様の理由で再現度が低くなります。
 
 > ⚠️ **開発・ライセンスに関するご注意**

@@ -118,6 +118,8 @@
 
 #define SD_ROOT "/SMS"
 
+#define SOUND_RATE 32768
+
 extern "C" {
   uint8_t readByte(void* context, uint16_t addr);
   void writeByte(void* context, uint16_t addr, uint8_t val);
@@ -152,7 +154,7 @@ void updateFabGLSound();
 fabgl::VGAController DisplayController;
 fabgl::Canvas* canvas;
 fabgl::Bitmap* smsBitmap;
-fabgl::SoundGenerator soundGenerator;
+fabgl::SoundGenerator soundGenerator(SOUND_RATE);
 fabgl::NoiseWaveformGenerator noiseGen;
 fabgl::PS2Controller PS2Controller;
 
@@ -294,7 +296,7 @@ private:
 
   static const int32_t OPLL_CLOCK = 3579545;
 
-  static const int LP_SHIFT = 2;
+  static const int LP_SHIFT = SOUND_RATE >= 32768 ? 3 : 2;
   int32_t lpState = 0;
 
   struct FMCommand {
@@ -308,7 +310,7 @@ private:
 
 public:
   YM2413Generator() {
-    opll = OPLL_new(OPLL_CLOCK, 16384);
+    opll = OPLL_new(OPLL_CLOCK, SOUND_RATE);
   }
 
   ~YM2413Generator() {
@@ -338,7 +340,7 @@ public:
 
     int nextHead = (head + 1) % BUFFER_SIZE;
     while (nextHead != tail) {
-      int32_t raw = OPLL_calc(opll) >> 4;
+      int32_t raw = OPLL_calc(opll) >> 3;
       lpState += (raw - lpState) >> LP_SHIFT;
       sampleBuffer[head] = (int16_t)lpState;
       head = nextHead;
@@ -439,7 +441,7 @@ public:
     } else {
       ++freq;
       uint32_t freqHz = 111860 / (freq + 1);
-      phaseInc = (uint32_t)(freqHz << 18);
+      phaseInc = (uint32_t)(((uint64_t)freqHz << 32) / SOUND_RATE);
     }
     curVol = vol;
     memcpy(waveform, newWave, 32);
@@ -508,7 +510,7 @@ private:
   volatile int head = 0;
   volatile int tail = 0;
 
-  static const int LP_SHIFT = 2;
+  static const int LP_SHIFT = SOUND_RATE >= 32768 ? 3 : 2;
   int32_t lpState = 0;
 
 public:
@@ -569,7 +571,7 @@ public:
     if (rate > 0) {
       tickStep = (uint32_t)(((uint64_t)snClock << 16) / rate);
     } else {
-      tickStep = (uint32_t)(((uint64_t)snClock << 16) / 16384);
+      tickStep = (uint32_t)(((uint64_t)snClock << 16) / SOUND_RATE);
     }
   }
 
